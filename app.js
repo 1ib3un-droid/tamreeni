@@ -409,7 +409,10 @@ function planForDate(d) {
   const t = today(); const s = S.sess[d];
   if (sessionHasWork(s)) return { day: s.day, status: 'done' };
   if (S.plan[d]) return { day: S.plan[d], status: d < t ? 'missed' : 'planned' };
-  if (d < t) return (isTrainDow(d) && d >= S.cfg.startDate) ? { day: scheduledDay(d), status: 'missed' } : { day: null, status: 'rest' };
+  if (d < t) {
+    if (!isTrainDow(d)) return { day: null, status: 'rest' };
+    return d >= S.cfg.startDate ? { day: scheduledDay(d), status: 'missed' } : { day: scheduledDay(d), status: 'prestart' };
+  }
   if (d === t) { const sg = suggestion(t); return sg.day ? { day: sg.day, status: 'today' } : { day: null, status: 'rest', makeup: sg.makeup }; }
   if (!isTrainDow(d)) return { day: null, status: 'rest' };
   if (weekStart(d) !== weekStart(t)) return { day: scheduledDay(d), status: 'future' };
@@ -433,7 +436,7 @@ function weekStrip(sel) {
   const cells = Array.from({ length: 7 }, (_, i) => addDays(ws, i)).map(d => {
     const p = planForDate(d);
     const lbl = p.day ? PROGRAM[p.day].short : 'راحة';
-    const st = p.status === 'done' ? 'color:var(--accent)' : p.status === 'missed' ? 'color:var(--bad)' : p.day ? '' : 'opacity:.55';
+    const st = p.status === 'done' ? 'color:var(--accent)' : p.status === 'missed' ? 'color:var(--bad)' : (p.day && p.status !== 'prestart') ? '' : 'opacity:.45';
     return `<a href="#workout/${d}" class="wd ${d === sel ? 'on' : ''} ${d === t ? 'tdy' : ''}"><span class="tiny">${DAY_AR[dow(d)].replace('ال', '')}</span><b>${pd(d).getDate()}</b><span class="tiny" style="${st}">${p.status === 'done' ? '✓ ' : ''}${lbl}</span></a>`;
   }).join('');
   return `<div class="row between" style="margin-bottom:6px"><a class="btn btn-sm" href="#workout/${addDays(ws, -7)}">→ الأسبوع السابق</a>
@@ -455,6 +458,7 @@ function viewWorkout(arg) {
   const wk = programWeek(date);
   let note = '';
   if (c.readOnly) note = `<div class="banner small">تمرين <b>${dLabel(c.sel)}</b>. تقدر تتصفحه وتشوف الشرح والتفاصيل، والتسجيل يكون يومه.</div>`;
+  else if (c.status === 'prestart') note = `<div class="banner small">هذا اليوم قبل <b>تاريخ بداية البرنامج</b> (${dLabel(S.cfg.startDate)})، فما ينحسب عليك. تقدر تغيّر تاريخ البداية من الإعدادات.</div>`;
   else if (c.mode === 'date' && c.sel < t) note = c.status === 'missed'
     ? `<div class="banner warn small">هذي الحصة فاتتك (${dLabel(c.sel)}). لو تمرنت ونسيت تسجل، تقدر تسجلها هنا.</div>`
     : `<div class="banner small">حصة ${dLabel(c.sel)}. تقدر تعدّل أو تضيف مجموعات نسيتها.</div>`;
