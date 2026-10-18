@@ -205,6 +205,30 @@ function suggestion(date = today()) {
   if (wi.remaining.length && wi.remaining.length > wi.slotsLeft) return { day: null, wi, kind: 'rest-makeup', makeup: wi.remaining[0] };
   return { day: null, wi, kind: 'rest' };
 }
+/* التمرين الجاي بعد هذا اليوم */
+function nextPlan(date = today()) {
+  for (let i = 1; i <= 7; i++) {
+    const d = addDays(date, i);
+    if (!isTrainDow(d)) continue;
+    if (weekStart(d) === weekStart(date)) {
+      const wi = weekInfo(date);
+      const rem = wi.remaining.filter(k => !(S.sess[date] && S.sess[date].day === k));
+      return { date: d, day: rem[0] || scheduledDay(d) };
+    }
+    return { date: d, day: scheduledDay(d) };
+  }
+  return null;
+}
+/* أي يوم يعرضه تبويب التمرين */
+function workoutDay(arg, t) {
+  if (arg && PROGRAM[arg]) return { day: arg, preview: null };
+  const s = S.sess[t]; const sg = suggestion(t);
+  if (s?.day && (sessionHasWork(s) || s.start)) return { day: s.day, preview: null };
+  if (sg.day) return { day: sg.day, preview: null };
+  if (sg.makeup) return { day: sg.makeup, preview: null };
+  const np = nextPlan(t);
+  return { day: np ? np.day : 'upper', preview: np };
+}
 function ensureSession(date, day) {
   if (!S.sess[date]) S.sess[date] = { day, ex: {}, start: null, end: null };
   if (!S.sess[date].day) S.sess[date].day = day;
@@ -338,7 +362,7 @@ function viewHome() {
     const drop = sg.drop ? `<div class="banner warn small">الأسبوع ما يكفي لكل الحصص. اقتراح: احذف حصة <b>${PROGRAM[sg.drop].ar}</b> هالأسبوع. <button class="btn-sm btn-ghost" data-skip="${sg.drop}">احذفها</button></div>` : '';
     workout = `<h2>تمرين اليوم: ${PROGRAM[sg.day].ar}</h2>${note}${drop}
       <p class="muted small">${PROGRAM[sg.day].ex.length} تمارين · الأسبوع ${programWeek(t)} من البرنامج</p>
-      <a class="btn btn-primary btn-block" href="#workout">ابدأ التمرين</a>`;
+      <a class="btn btn-primary btn-block" href="#workout/${t}">ابدأ التمرين</a>`;
   } else if (sg.kind === 'rest-makeup') {
     workout = `<h2>يوم راحة</h2><div class="banner warn">فاتتك حصة <b>${PROGRAM[sg.makeup].ar}</b> هالأسبوع. تبي تعوضها اليوم؟</div>
       <div class="row"><button class="btn-primary grow" data-makeup="${sg.makeup}">أعوضها اليوم</button><button class="grow" data-skip="${sg.makeup}">لا، أحذفها</button></div>`;
@@ -350,9 +374,15 @@ function viewHome() {
   const weekDots = WEEK_ORDER.map(k => `<span class="chip ${wi.done[k] ? 'on' : ''}">${wi.done[k] ? '✓ ' : ''}${PROGRAM[k].short}</span>`).join('');
   const isSat = dow(t) === 6;
   const wt = S.weights[t];
+  const showNext = !sg.day || (S.sess[t] && S.sess[t].end);
+  const np = showNext ? nextPlan(t) : null;
+  const nextCard = np ? `<div class="card"><div class="row between"><h2>التمرين الجاي: ${PROGRAM[np.day].ar}</h2><span class="small muted">${daysBetween(t, np.date) === 1 ? 'بكرة' : dLabel(np.date)}</span></div>
+    ${PROGRAM[np.day].ex.map((_, i) => { const sl = slotExercise(np.day, i); return `<div class="item"><span>${i + 1}. ${esc(EXERCISES[sl.id].ar)}</span><span class="small muted" style="white-space:nowrap">${sl.sets} × ${sl.reps}</span></div>`; }).join('')}
+    <a class="btn btn-block" style="margin-top:10px" href="#workout/${np.date}">شوف التفاصيل والشرح</a></div>` : '';
   return `<h1>${dLabel(t)}</h1>
   ${isSat ? `<div class="banner good row between"><span>تقريرك الأسبوعي جاهز 📊</span><button class="btn-sm btn-primary" data-report>افتحه</button></div>` : ''}
   <div class="card">${workout}<div class="chips" style="margin-top:12px">${weekDots}</div></div>
+  ${nextCard}
   <div class="card"><div class="row between"><h2>أكل اليوم</h2><a href="#food" class="small">التفاصيل ←</a></div>
     <p class="muted small" style="margin-top:-6px">${isRestDay(t) ? 'أهداف يوم الراحة' : 'أهداف يوم التمرين'}</p>
     ${macroBar('السعرات', tot.kcal, tg.kcal, '')}${macroBar('البروتين', tot.p, tg.p, 'جم')}
@@ -367,39 +397,85 @@ viewHome.bind_ = app => {
   $$('[data-skip]', app).forEach(b => b.onclick = () => {
     const ws = weekStart(t); S.skips[ws] = [...new Set([...(S.skips[ws] || []), b.dataset.skip])]; touchCore(); rerender(); toast('تم حذف الحصة من هالأسبوع');
   });
-  $$('[data-makeup]', app).forEach(b => b.onclick = () => { S.plan[t] = b.dataset.makeup; touchCore(); location.hash = '#workout'; });
+  $$('[data-makeup]', app).forEach(b => b.onclick = () => { S.plan[t] = b.dataset.makeup; touchCore(); location.hash = '#workout/' + t; });
   $$('[data-water]', app).forEach(b => b.onclick = () => { const d = diaryDay(t, true); d.water = (d.water || 0) + 250; touchDiary(t); rerender(); });
   const rb = $('[data-report]', app); if (rb) rb.onclick = () => showReport(addDays(weekStart(t), -7));
   $('#hws', app).onclick = () => { const v = num($('#hw', app).value); if (!v || v < 25 || v > 250) return toast('اكتب وزن صحيح'); S.weights[t] = v; touchCore(); toast('تم حفظ الوزن'); };
 };
 
 /* ---------- التمرين ---------- */
+/* وش الحصة المخططة لأي تاريخ */
+function planForDate(d) {
+  const t = today(); const s = S.sess[d];
+  if (sessionHasWork(s)) return { day: s.day, status: 'done' };
+  if (S.plan[d]) return { day: S.plan[d], status: d < t ? 'missed' : 'planned' };
+  if (d < t) return (isTrainDow(d) && d >= S.cfg.startDate) ? { day: scheduledDay(d), status: 'missed' } : { day: null, status: 'rest' };
+  if (d === t) { const sg = suggestion(t); return sg.day ? { day: sg.day, status: 'today' } : { day: null, status: 'rest', makeup: sg.makeup }; }
+  if (!isTrainDow(d)) return { day: null, status: 'rest' };
+  if (weekStart(d) !== weekStart(t)) return { day: scheduledDay(d), status: 'future' };
+  const queue = weekInfo(t).remaining.slice();
+  const td = planForDate(t).day; const qi = queue.indexOf(td); if (qi >= 0) queue.splice(qi, 1);
+  const fut = Array.from({ length: 7 }, (_, i) => addDays(weekStart(t), i)).filter(x => x > t && isTrainDow(x) && !S.plan[x]);
+  const day = queue.filter(k => !Object.values(S.plan).includes(k))[fut.indexOf(d)];
+  return day ? { day, status: 'future' } : { day: null, status: 'rest', extra: true };
+}
+function workoutCtx(arg) {
+  const t = today();
+  if (arg && PROGRAM[arg]) return { mode: 'browse', day: arg, sel: null, logDate: t, readOnly: false };
+  let sel = (arg && /^\d{4}-\d{2}-\d{2}$/.test(arg)) ? arg : null;
+  if (!sel) { const pt = planForDate(t); if (pt.day) sel = t; else { const np = nextPlan(t); sel = np ? np.date : t; } }
+  const p = planForDate(sel);
+  const readOnly = sel > t;
+  return { mode: 'date', sel, day: p.day, status: p.status, makeup: p.makeup, logDate: readOnly ? null : sel, readOnly };
+}
+function weekStrip(sel) {
+  const t = today(); const ws = weekStart(sel || t);
+  const cells = Array.from({ length: 7 }, (_, i) => addDays(ws, i)).map(d => {
+    const p = planForDate(d);
+    const lbl = p.day ? PROGRAM[p.day].short : 'راحة';
+    const st = p.status === 'done' ? 'color:var(--accent)' : p.status === 'missed' ? 'color:var(--bad)' : p.day ? '' : 'opacity:.55';
+    return `<a href="#workout/${d}" class="wd ${d === sel ? 'on' : ''} ${d === t ? 'tdy' : ''}"><span class="tiny">${DAY_AR[dow(d)].replace('ال', '')}</span><b>${pd(d).getDate()}</b><span class="tiny" style="${st}">${p.status === 'done' ? '✓ ' : ''}${lbl}</span></a>`;
+  }).join('');
+  return `<div class="row between" style="margin-bottom:6px"><a class="btn btn-sm" href="#workout/${addDays(ws, -7)}">→ الأسبوع السابق</a>
+    <span class="small muted">${dShort(ws)} - ${dShort(addDays(ws, 6))}</span><a class="btn btn-sm" href="#workout/${addDays(ws, 7)}">الأسبوع الجاي ←</a></div>
+    <div class="week">${cells}</div>`;
+}
 function viewWorkout(arg) {
   const t = today();
-  const sg = suggestion(t);
-  const s = S.sess[t];
-  const day = (arg && PROGRAM[arg]) ? arg : (s?.day || sg.day || sg.makeup || scheduledDay(t) || 'upper');
-  const P = PROGRAM[day];
-  const wk = programWeek(t);
-  const chips = WEEK_ORDER.map(k => `<a href="#workout/${k}" class="chip ${k === day ? 'on' : ''}">${sg.wi.done[k] ? '✓ ' : ''}${PROGRAM[k].short}</a>`).join('');
+  const c = workoutCtx(arg);
+  const chips = WEEK_ORDER.map(k => `<a href="#workout/${k}" class="chip ${c.mode === 'browse' && k === c.day ? 'on' : ''}">${PROGRAM[k].short}</a>`).join('');
+  const top = `${weekStrip(c.sel || t)}<div class="row small muted" style="margin:10px 0 4px">تصفح حسب الحصة:</div><div class="scroll-x" style="margin-bottom:10px">${chips}</div>`;
+  if (!c.day) {
+    const mk = c.makeup ? `<div class="banner warn">فاتتك حصة <b>${PROGRAM[c.makeup].ar}</b> هالأسبوع. تبي تعوضها اليوم؟</div><button class="btn-primary btn-block" data-makeup="${c.makeup}">أعوضها اليوم</button>` : '';
+    return `<h1>${dLabel(c.sel)}</h1>${top}<div class="card"><h2>يوم راحة 😴</h2><p class="muted small">${c.extra ? 'خلصت حصص الأسبوع قبل هذا اليوم.' : 'ما فيه تمرين مخطط هذا اليوم.'} اختر يوم ثاني من فوق، أو تصفح أي حصة.</p>${mk}</div>`;
+  }
+  const day = c.day; const P = PROGRAM[day];
+  const date = c.sel || t;
+  const s = c.logDate ? S.sess[c.logDate] : null;
+  const wk = programWeek(date);
+  let note = '';
+  if (c.readOnly) note = `<div class="banner small">تمرين <b>${dLabel(c.sel)}</b>. تقدر تتصفحه وتشوف الشرح والتفاصيل، والتسجيل يكون يومه.</div>`;
+  else if (c.mode === 'date' && c.sel < t) note = c.status === 'missed'
+    ? `<div class="banner warn small">هذي الحصة فاتتك (${dLabel(c.sel)}). لو تمرنت ونسيت تسجل، تقدر تسجلها هنا.</div>`
+    : `<div class="banner small">حصة ${dLabel(c.sel)}. تقدر تعدّل أو تضيف مجموعات نسيتها.</div>`;
+  else if (c.mode === 'browse') note = `<div class="banner small">تتصفح حصة ${P.ar}. أي مجموعة تسجلها هنا تنحسب على اليوم.</div>`;
   const conflict = s && s.day && s.day !== day && sessionHasWork(s);
   const phase = wk <= 2
     ? `<div class="banner warn small"><b>الأسبوع ${wk}: مرحلة تعود.</b> كل المجموعات تخلي فيها 2-3 تكرارات احتياط، وبدون فشل أبداً.</div>`
     : `<div class="banner small">الأسبوع ${wk}: المركبة 1-2 احتياط. وآخر مجموعة في تمارين العزل (عليها <span class="tag f" style="display:inline">فشل</span>) تكمل فيها لين ما تقدر تسوي تكرار نظيف.</div>`;
   let timer = '';
-  if (s && s.start && s.day === day) {
+  if (s && s.start && s.day === day && c.logDate === t) {
     const end = s.end || Date.now();
     timer = `<div class="row between small"><span class="muted">مدة الحصة: <b id="dur">${Math.round((end - s.start) / 60000)}</b> دقيقة</span>${s.end ? '<span class="done-mark">منتهية ✓</span>' : ''}</div>`;
   }
-  const cards = P.ex.map((_, i) => exerciseCard(day, i, t)).join('');
-  return `<h1>${P.ar}</h1>
-    <div class="scroll-x" style="margin-bottom:10px">${chips}</div>
-    ${conflict ? `<div class="banner warn small">سجلت اليوم حصة ${PROGRAM[s.day].ar}. اللي تسجله هنا بينضاف لنفس حصة اليوم.</div>` : ''}
-    ${phase}${timer}
+  const cards = P.ex.map((_, i) => exerciseCard(day, i, date, c.readOnly)).join('');
+  return `<h1>${P.ar}</h1><p class="muted small" style="margin:-8px 2px 10px">${c.sel ? dLabel(c.sel) : 'تصفح'}</p>${top}
+    ${conflict ? `<div class="banner warn small">مسجل في هذا اليوم حصة ${PROGRAM[s.day].ar}. اللي تسجله هنا بينضاف لنفس الحصة.</div>` : ''}
+    ${note}${c.readOnly ? '' : phase}${timer}
     ${cards}
-    <button class="btn-primary btn-block" id="finish" style="margin:6px 0 20px">${s?.end && s.day === day ? 'ملخص الحصة' : 'إنهاء الحصة'}</button>`;
+    ${c.readOnly ? '' : `<button class="btn-primary btn-block" id="finish" style="margin:6px 0 20px">${s?.end && s.day === day ? 'ملخص الحصة' : 'إنهاء الحصة'}</button>`}`;
 }
-function exerciseCard(day, idx, date) {
+function exerciseCard(day, idx, date, readOnly) {
   const slot = slotExercise(day, idx); const ex = EXERCISES[slot.id];
   const s = S.sess[date]; const logged = s?.ex?.[slot.id] || [];
   const work = workingSets(logged);
@@ -415,18 +491,18 @@ function exerciseCard(day, idx, date) {
       if (ex.bar && W > 30) sug.push([20, 10]);
       sug.push([round25(W * 0.5), ex.bar ? 6 : 8], [round25(W * 0.75), ex.bar ? 3 : 4]);
     }
-    warm = `<div class="last"><b>إحماء:</b> ${W ? sug.map(([w, r]) => `<button class="btn-sm btn-ghost" data-warm="${slot.id}" data-w="${w}" data-r="${r}">${w}×${r}</button>`).join(' ') + ' <span class="tiny">(اضغط لتسجيلها)</span>'
+    warm = readOnly ? `<div class="last"><b>إحماء:</b> 2-3 مجموعات خفيفة قبل وزن العمل.</div>` : `<div class="last"><b>إحماء:</b> ${W ? sug.map(([w, r]) => `<button class="btn-sm btn-ghost" data-warm="${slot.id}" data-w="${w}" data-r="${r}">${w}×${r}</button>`).join(' ') + ' <span class="tiny">(اضغط لتسجيلها)</span>'
       : '2-3 مجموعات خفيفة تصعد فيها تدريجياً قبل وزن العمل. سجلها بنوع «إحماء».'}</div>`;
   }
   const rows = [];
   logged.forEach((st, k) => {
     const e = e1rm(st.w, st.r);
-    rows.push(`<div class="set logged" data-edit="${slot.id}" data-k="${k}"><span class="n">${st.t === 'w' ? 'إ' : workingSets(logged.slice(0, k + 1)).length}</span>
+    rows.push(`<div class="set logged" ${readOnly ? '' : `data-edit="${slot.id}" data-k="${k}"`}><span class="n">${st.t === 'w' ? 'إ' : workingSets(logged.slice(0, k + 1)).length}</span>
       <span class="tag ${st.t}">${st.t === 'w' ? 'إحماء' : st.t === 'f' ? 'فشل' : 'عادية'}</span>
       <span class="val">${fmt(st.w)} كجم</span><span class="val">${st.r} ×</span>
       <span class="tiny muted" style="text-align:center">${st.pr ? '<span class="pr">🏆</span>' : e ? fmt(e) : ''}</span></div>`);
   });
-  const remain = Math.max(0, slot.sets - work.length);
+  const remain = readOnly ? 0 : Math.max(0, slot.sets - work.length);
   const prevSets = lp ? lp.sets : [];
   for (let k = 0; k < remain; k++) {
     const setNo = work.length + k + 1;
@@ -453,18 +529,23 @@ function exerciseCard(day, idx, date) {
     ${S.notes[slot.id] ? `<div class="note">📝 ${esc(S.notes[slot.id])}</div>` : ''}
     ${lp ? `<div class="last">آخر مرة (${dShort(lp.date)}): ${lp.sets.map(x => `${fmt(x.w)}×${x.r}`).join('، ')}</div>` : ''}
     ${pr ? `<div class="tiny muted" style="margin-top:4px">🏆 أفضل قوة مقدّرة: ${fmt(pr.e1rm)} كجم · أثقل وزن: ${fmt(pr.w)} كجم</div>` : ''}
-    ${warm}${hdr}${rows.join('')}
-    <button class="btn-sm btn-ghost" style="margin-top:8px" data-extra="${slot.id}">+ مجموعة</button>
+    ${warm}${readOnly ? (rows.length ? hdr + rows.join('') : '') : hdr + rows.join('') + `<button class="btn-sm btn-ghost" style="margin-top:8px" data-extra="${slot.id}">+ مجموعة</button>`}
   </div>`;
 }
 viewWorkout.bind_ = (app, arg) => {
-  const t = today();
-  const s0 = S.sess[t]; const sg = suggestion(t);
-  const day = (arg && PROGRAM[arg]) ? arg : (s0?.day || sg.day || sg.makeup || scheduledDay(t) || 'upper');
+  const c = workoutCtx(arg);
+  $$('[data-makeup]', app).forEach(b => b.onclick = () => { S.plan[today()] = b.dataset.makeup; touchCore(); location.hash = '#workout/' + today(); rerender(); });
+  $$('[data-video]', app).forEach(b => b.onclick = () => showVideo(b.dataset.video));
+  $$('[data-info]', app).forEach(b => b.onclick = () => showInfo(b.dataset.info));
+  $$('[data-alt]', app).forEach(b => b.onclick = () => showAlts(b.dataset.alt));
+  $$('[data-note]', app).forEach(b => b.onclick = () => editNote(b.dataset.note));
+  if (!c.day || c.readOnly) return;
+  const t = c.logDate; const day = c.day;
+  const s0 = S.sess[t];
   const logSet = (exId, w, r, tp) => {
     const s = ensureSession(t, day);
     if (!s.start) s.start = Date.now();
-    s.end = null;
+    if (t === today()) s.end = null;
     s.ex[exId] = s.ex[exId] || [];
     const set = { w, r, t: tp, ts: Date.now() };
     s.ex[exId].push(set);
@@ -493,11 +574,7 @@ viewWorkout.bind_ = (app, arg) => {
   $$('[data-warm]', app).forEach(b => b.onclick = () => logSet(b.dataset.warm, +b.dataset.w, +b.dataset.r, 'w'));
   $$('[data-extra]', app).forEach(b => b.onclick = () => setEditor(t, day, b.dataset.extra, null));
   $$('[data-edit]', app).forEach(el => el.onclick = () => setEditor(t, day, el.dataset.edit, +el.dataset.k));
-  $$('[data-video]', app).forEach(b => b.onclick = () => showVideo(b.dataset.video));
-  $$('[data-info]', app).forEach(b => b.onclick = () => showInfo(b.dataset.info));
-  $$('[data-alt]', app).forEach(b => b.onclick = () => showAlts(b.dataset.alt));
-  $$('[data-note]', app).forEach(b => b.onclick = () => editNote(b.dataset.note));
-  $('#finish', app).onclick = () => {
+  const fin = $('#finish', app); if (fin) fin.onclick = () => {
     const s = S.sess[t];
     if (!sessionHasWork(s)) return toast('ما سجلت أي مجموعة للحين');
     if (!s.end) { s.end = Date.now(); touchSess(t); }
