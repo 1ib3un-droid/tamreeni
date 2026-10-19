@@ -288,6 +288,29 @@ const BASE_FOODS = [
   { id: 'b_whey',         name: 'واي بروتين (سكوب 30جم)', per: 'unit', unit: 'سكوب', grams: 30, kcal: 120, p: 24, c: 3, f: 1.5 }
 ];
 
+/* توست */
+BASE_FOODS.push(
+  { id: 'b_toast_white', name: 'توست أبيض (شريحة)', per: 'unit', unit: 'شريحة', grams: 28, kcal: 75, p: 2.5, c: 14, f: 1 },
+  { id: 'b_toast_brown', name: 'توست بر (شريحة)', per: 'unit', unit: 'شريحة', grams: 28, kcal: 71, p: 3.5, c: 12, f: 1 },
+  { id: 'b_toast_pb', name: 'توست أبيض + فول سوداني', per: 'unit', unit: 'ساندويتش', grams: 72, kcal: 243, p: 9, c: 31, f: 10, note: 'شريحتين توست أبيض + ملعقة كبيرة زبدة فول سوداني (16 جم)' }
+);
+
+/* منتجات جاهزة: القيم للعلبة كاملة، من مواقع الشركات الرسمية */
+const READY_FOODS = [
+  { id: 'r_nada_pro_coffee',  name: 'ندى بروتين قهوة 30ج',          size: '320 مل', kcal: 278, p: 30.4, c: 32,   f: 0.2 },
+  { id: 'r_nadec_pro_plain',  name: 'نادك بروتين سادة 30ج',          size: '350 مل', kcal: 196, p: 29.8, c: 17.5, f: 0.7 },
+  { id: 'r_nadec_pro_choc',   name: 'نادك بروتين شوكولاتة 30ج',      size: '350 مل', kcal: 273, p: 29.8, c: 36.8, f: 0.7 },
+  { id: 'r_nadec_pro_straw',  name: 'نادك بروتين فراولة 30ج',        size: '350 مل', kcal: 256, p: 29.8, c: 32.6, f: 0.7 },
+  { id: 'r_almarai_pro_van',  name: 'المراعي بروتين فانيلا 34ج',     size: '400 مل', kcal: 288, p: 34,   c: 37.6, f: 1.2 },
+  { id: 'r_almarai_pro_choc', name: 'المراعي بروتين شوكولاتة 34ج',   size: '400 مل', kcal: 292, p: 34,   c: 38.4, f: 1.6 },
+  { id: 'r_almarai_pro_sb',   name: 'المراعي بروتين فراولة وموز 34ج', size: '400 مل', kcal: 284, p: 34,   c: 36.8, f: 1.2 },
+  { id: 'r_almarai_mm_plain', name: 'المراعي Muscle Milk سادة 40ج',  size: '400 مل', kcal: 232, p: 40,   c: 15.2, f: 0.8 },
+  { id: 'r_almarai_mm_choc',  name: 'المراعي Muscle Milk شوكولاتة 40ج', size: '400 مل', kcal: 272, p: 40, c: 24.4, f: 1.2 },
+  { id: 'r_nadec_greek',      name: 'نادك زبادي يوناني سادة 8ج',     size: '160 ج',  kcal: 166, p: 8.3,  c: 11.7, f: 9.6 },
+  { id: 'r_almarai_greek',    name: 'المراعي زبادي يوناني سادة 10ج', size: '150 ج',  kcal: 208, p: 10,   c: 13,   f: 13 }
+].map(x => ({ ...x, per: 'unit', unit: 'علبة', ready: true }));
+BASE_FOODS.push(...READY_FOODS);
+
 const DEFAULT_SUPPS = [
   { id: 's_creatine', name: 'كرياتين' },
   { id: 's_whey', name: 'واي بروتين' }

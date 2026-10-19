@@ -1,7 +1,7 @@
 /* تمريني — تطبيق التمارين والأكل */
 'use strict';
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.3.0';
 const LS_STATE = 'fitapp_state_v1';
 const LS_META = 'fitapp_meta_v1';
 
@@ -14,6 +14,9 @@ const r1 = n => Math.round(n * 10) / 10;
 const r0 = n => Math.round(n);
 const round25 = n => Math.max(0, Math.round(n / 2.5) * 2.5);
 const num = v => { const x = parseFloat(String(v).replace(',', '.').replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d))); return isNaN(x) ? null : x; };
+/* بحث عربي: يتجاهل الفروق بين أ/إ/آ/ا و ى/ي و ة/ه والتشكيل */
+const norm = s => String(s || '').toLowerCase().replace(/[أإآٱ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه').replace(/ؤ/g, 'و').replace(/ئ/g, 'ي').replace(/[\u064B-\u065F\u0640]/g, '').replace(/\s+/g, ' ').trim();
+const match = (text, q) => { const t = norm(text); return norm(q).split(' ').filter(Boolean).every(w => t.includes(w)); };
 const fw = n => (n == null || isNaN(n)) ? '—' : String(r1(n)); // الأوزان: تحافظ على .5
 const fmt = n => (n == null || isNaN(n)) ? '—' : (Math.abs(n) >= 100 || Math.abs(n - Math.round(n)) < 0.05 ? String(Math.round(n)) : r1(n).toString());
 
@@ -45,7 +48,7 @@ function defaultState() {
       fb: null
     },
     foods: {}, recent: [], lastQty: {}, templates: {},
-    notes: {}, videos: {}, swaps: {}, prs: {},
+    notes: {}, videos: {}, swaps: {}, prs: {}, customEx: {}, barcodes: {},
     weights: {}, plan: {}, skips: {},
     sess: {}, diary: {}
   };
@@ -59,6 +62,14 @@ function load() {
   for (const k in d.cfg) if (S.cfg[k] === undefined) S.cfg[k] = d.cfg[k];
   try { META = JSON.parse(localStorage.getItem(LS_META)) || META; } catch (e) {}
   META.u = META.u || {}; META.dirty = META.dirty || {};
+  applyCustom();
+}
+/* التمارين اللي أضافها المستخدم تنضاف لقائمة التمارين */
+function applyCustom() {
+  for (const id in S.customEx || {}) {
+    const c = S.customEx[id];
+    EXERCISES[id] = { ar: c.ar, en: '', m: c.m, kind: c.kind, bw: !!c.bw, alts: [], cues: [], custom: true, hidden: !!c.hidden };
+  }
 }
 function persist() {
   try {
@@ -67,8 +78,10 @@ function persist() {
   } catch (e) { toast('تعذر الحفظ على الجهاز'); }
 }
 /* مفاتيح المزامنة: core + sess_YYYY-MM + diary_YYYY-MM */
-const CORE_KEYS = ['v', 'cfg', 'foods', 'recent', 'lastQty', 'templates', 'notes', 'videos', 'swaps', 'prs', 'weights', 'plan', 'skips'];
+const CORE_KEYS = ['v', 'cfg', 'foods', 'recent', 'lastQty', 'templates', 'notes', 'videos', 'swaps', 'prs', 'weights', 'plan', 'skips', 'customEx', 'barcodes'];
+let touchLog = null;
 function touch(...keys) {
+  if (touchLog) keys.forEach(k => touchLog.add(k));
   const t = Date.now();
   keys.forEach(k => { META.u[k] = t; META.dirty[k] = true; });
   persist();
@@ -101,10 +114,23 @@ function allPartKeys() {
 
 /* ================= واجهة: نوافذ وتنبيهات ================= */
 let toastTimer;
-function toast(msg, ms = 2400) {
+function toast(msg, ms = 2400, action) {
   let t = $('.toast'); if (!t) { t = document.createElement('div'); t.className = 'toast'; document.body.appendChild(t); }
-  t.textContent = msg; t.classList.remove('hide'); clearTimeout(toastTimer);
+  t.innerHTML = ''; const sp = document.createElement('span'); sp.textContent = msg; t.appendChild(sp);
+  if (action) {
+    const b = document.createElement('button'); b.className = 'toast-btn'; b.textContent = action.label;
+    b.onclick = () => { t.classList.add('hide'); clearTimeout(toastTimer); action.fn(); };
+    t.appendChild(b);
+  }
+  t.classList.remove('hide'); clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.add('hide'), ms);
+}
+/* تنفيذ عملية مع إمكانية التراجع عنها */
+function undoable(msg, fn) {
+  const snap = JSON.stringify(S);
+  touchLog = new Set();
+  try { fn(); } finally { var keys = [...touchLog]; touchLog = null; }
+  toast(msg, 6000, { label: 'تراجع', fn: () => { S = JSON.parse(snap); load2(); if (keys.length) touch(...keys); else persist(); closeModal(); rerender(); toast('تم التراجع'); } });
 }
 let modalCleanup = null;
 function openModal(html, mount) {
@@ -132,10 +158,17 @@ const e1rm = (w, r) => (w > 0 && r > 0 && r <= 15) ? w * (1 + r / 30) : null;
 const programWeek = (date = today()) => Math.max(1, Math.floor(daysBetween(S.cfg.startDate, date) / 7) + 1);
 const failureAllowed = (date = today()) => programWeek(date) > 2;
 
-function slotExercise(dayKey, idx) {
-  const base = PROGRAM[dayKey].ex[idx];
-  const swapped = S.swaps[dayKey + ':' + idx];
-  return { ...base, id: swapped || base.id, orig: base.id, swapped: !!swapped };
+function slotExercise(dayKey, idx, date) {
+  const base = PROGRAM[dayKey].ex[idx]; const key = dayKey + ':' + idx;
+  const sessSw = date ? S.sess[date]?.swaps?.[key] : null;
+  const perm = S.swaps[key];
+  const id = sessSw || perm || base.id;
+  return { ...base, id, orig: base.id, swapped: id !== base.id, scope: sessSw ? 'session' : (perm ? 'always' : null) };
+}
+const repsFor = ex => ex.kind === 'c' ? '8-12' : '10-15';
+function extraSlot(date, n) {
+  const id = S.sess[date].extra[n]; const ex = EXERCISES[id];
+  return { id, sets: 3, reps: repsFor(ex), warm: false, extra: true, n };
 }
 function workingSets(arr) { return (arr || []).filter(s => s.t !== 'w'); }
 function sessionHasWork(sess) { return !!sess && Object.values(sess.ex || {}).some(a => workingSets(a).length > 0); }
@@ -231,7 +264,7 @@ function workoutDay(arg, t) {
 }
 function ensureSession(date, day) {
   if (!S.sess[date]) S.sess[date] = { day, ex: {}, start: null, end: null };
-  if (!S.sess[date].day) S.sess[date].day = day;
+  if (!S.sess[date].day || !sessionHasWork(S.sess[date])) S.sess[date].day = day;
   return S.sess[date];
 }
 
@@ -380,7 +413,7 @@ function viewHome() {
   const showNext = !sg.day || (S.sess[t] && S.sess[t].end);
   const np = showNext ? nextPlan(t) : null;
   const nextCard = np ? `<div class="card"><div class="row between"><h2>التمرين الجاي: ${PROGRAM[np.day].ar}</h2><span class="small muted">${daysBetween(t, np.date) === 1 ? 'بكرة' : dLabel(np.date)}</span></div>
-    ${PROGRAM[np.day].ex.map((_, i) => { const sl = slotExercise(np.day, i); return `<div class="item"><span>${i + 1}. ${esc(EXERCISES[sl.id].ar)}</span><span class="small muted" style="white-space:nowrap">${sl.sets} × ${sl.reps}</span></div>`; }).join('')}
+    ${PROGRAM[np.day].ex.map((_, i) => { const sl = slotExercise(np.day, i, np.date); return `<div class="item"><span>${i + 1}. ${esc(EXERCISES[sl.id].ar)}</span><span class="small muted" style="white-space:nowrap">${sl.sets} × ${sl.reps}</span></div>`; }).join('')}
     <a class="btn btn-block" style="margin-top:10px" href="#workout/${np.date}">شوف التفاصيل والشرح</a></div>` : '';
   return `<h1>${dLabel(t)}</h1>
   ${isSat ? `<div class="banner good row between"><span>تقريرك الأسبوعي جاهز 📊</span><button class="btn-sm btn-primary" data-report>افتحه</button></div>` : ''}
@@ -475,15 +508,19 @@ function viewWorkout(arg) {
     const end = s.end || Date.now();
     timer = `<div class="row between small"><span class="muted">مدة الحصة: <b id="dur">${Math.round((end - s.start) / 60000)}</b> دقيقة</span>${s.end ? '<span class="done-mark">منتهية ✓</span>' : ''}</div>`;
   }
-  const cards = P.ex.map((_, i) => exerciseCard(day, i, date, c.readOnly)).join('');
+  const sd = S.sess[date];
+  const extras = (sd && sd.day === day && sd.extra) ? sd.extra.map((id, n) => EXERCISES[id] ? exerciseCard(day, 'x' + n, date, c.readOnly) : '').join('') : '';
+  const cards = P.ex.map((_, i) => exerciseCard(day, i, date, c.readOnly)).join('') + extras;
   return `<h1>${P.ar}</h1><p class="muted small" style="margin:-8px 2px 10px">${c.sel ? dLabel(c.sel) : 'تصفح'}</p>${top}
     ${conflict ? `<div class="banner warn small">مسجل في هذا اليوم حصة ${PROGRAM[s.day].ar}. اللي تسجله هنا بينضاف لنفس الحصة.</div>` : ''}
     ${note}${c.readOnly ? '' : phase}${timer}
     ${cards}
+    ${c.readOnly ? '' : `<button class="btn btn-ghost btn-block" id="addExtra" style="margin-bottom:10px">+ تمرين إضافي (لعبته زيادة على الجدول)</button>`}
     ${c.readOnly ? '' : `<button class="btn-primary btn-block" id="finish" style="margin:6px 0 20px">${s?.end && s.day === day ? 'ملخص الحصة' : 'إنهاء الحصة'}</button>`}`;
 }
 function exerciseCard(day, idx, date, readOnly) {
-  const slot = slotExercise(day, idx); const ex = EXERCISES[slot.id];
+  const isExtra = typeof idx === 'string';
+  const slot = isExtra ? extraSlot(date, +idx.slice(1)) : slotExercise(day, idx, date); const ex = EXERCISES[slot.id];
   const s = S.sess[date]; const logged = s?.ex?.[slot.id] || [];
   const work = workingSets(logged);
   const lp = lastPerformance(slot.id, date);
@@ -522,22 +559,30 @@ function exerciseCard(day, idx, date, readOnly) {
       <input inputmode="numeric" placeholder="${pv ? pv.r : slot.reps}" aria-label="التكرار">
       <button class="ok" data-save="${slot.id}" aria-label="حفظ">✓</button></div>`);
   }
+  let repeat = '';
+  if (!readOnly && remain > 0 && work.length) {
+    const lw = work[work.length - 1]; const nextNo = work.length + 1;
+    const ntp = (ex.kind === 'i' && nextNo === slot.sets && fail) ? 'f' : 'n';
+    repeat = `<button class="btn-sm btn-primary" style="margin-top:8px" data-repeat="${slot.id}" data-w="${lw.w}" data-r="${lw.r}" data-t="${ntp}">↻ كرر: ${lw.w === 0 && ex.bw ? 'وزن الجسم' : fw(lw.w) + ' كجم'} × ${lw.r}${ntp === 'f' ? ' (فشل)' : ''}</button>`;
+  }
   const hdr = `<div class="row between tiny muted" style="margin-top:8px"><span style="width:34px;text-align:center">#</span><span style="width:64px">النوع</span><span class="grow" style="text-align:center">الوزن</span><span class="grow" style="text-align:center">التكرار</span><span style="width:44px"></span></div>`;
+  const badge = isExtra ? '<span class="chip" style="color:var(--blue)">إضافي</span>'
+    : slot.swapped ? `<span class="chip" style="color:var(--warn)">${slot.scope === 'session' ? 'بديل لهالحصة' : 'بديل'}</span>` : '';
   return `<div class="card" id="ex-${idx}">
-    <div class="ex-head"><div><div class="ex-title">${idx + 1}. ${esc(ex.ar)}</div><div class="en">${esc(ex.en)}</div>
-      <div class="chips" style="margin-top:6px">${ex.m.slice(0, 2).map(m => `<span class="chip">${MUSCLES[m].ar}</span>`).join('')}${slot.swapped ? '<span class="chip" style="color:var(--warn)">بديل</span>' : ''}</div></div>
+    <div class="ex-head"><div><div class="ex-title">${isExtra ? '+' : idx + 1 + '.'} ${esc(ex.ar)}</div>${ex.en ? `<div class="en">${esc(ex.en)}</div>` : ''}
+      <div class="chips" style="margin-top:6px">${ex.m.slice(0, 2).map(m => `<span class="chip">${MUSCLES[m].ar}</span>`).join('')}${ex.custom ? '<span class="chip">من عندك</span>' : ''}${badge}</div></div>
       <div style="text-align:left;white-space:nowrap"><b>${slot.sets} × ${slot.reps}</b><div class="tiny muted">${rest}</div>${work.length >= slot.sets ? '<div class="done-mark small">تم ✓</div>' : ''}</div></div>
     <div class="ex-tools">
       <button class="btn-sm" data-video="${slot.id}">🎥 الشرح</button>
       <button class="btn-sm" data-info="${slot.id}">ℹ️ الأداء</button>
-      <button class="btn-sm" data-alt="${day}:${idx}">⇄ بديل</button>
+      ${isExtra ? (readOnly ? '' : `<button class="btn-sm btn-danger" data-rmextra="${slot.n}">🗑 إزالة</button>`) : `<button class="btn-sm" data-alt="${day}:${idx}">⇄ بديل</button>`}
       <button class="btn-sm" data-note="${slot.id}">📝 ملاحظة</button>
     </div>
     ${S.notes[slot.id] ? `<div class="note">📝 ${esc(S.notes[slot.id])}</div>` : ''}
     ${lp ? `<div class="last">آخر مرة (${dShort(lp.date)}): ${lp.sets.map(x => `${x.w === 0 && ex.bw ? 'جسم' : fw(x.w)}×${x.r}`).join('، ')}</div>` : ''}
     ${pr ? `<div class="tiny muted" style="margin-top:4px">🏆 ${pr.e1rm > 0 ? `أفضل قوة مقدّرة: ${fmt(pr.e1rm)} كجم · أثقل وزن: ${fw(pr.w)} كجم` : ''}${pr.e1rm > 0 && pr.r0 ? ' · ' : ''}${pr.r0 ? `أكثر تكرار بوزن الجسم: ${pr.r0}` : ''}</div>` : ''}
     ${ex.bw ? '<div class="tiny muted" style="margin-top:4px">💡 بوزن جسمك اكتب الوزن 0. ولو أضفت وزن (حزام أو دمبل) اكتب الوزن الإضافي بس.</div>' : ''}
-    ${warm}${readOnly ? (rows.length ? hdr + rows.join('') : '') : hdr + rows.join('') + `<button class="btn-sm btn-ghost" style="margin-top:8px" data-extra="${slot.id}">+ مجموعة</button>`}
+    ${warm}${readOnly ? (rows.length ? hdr + rows.join('') : '') : hdr + rows.join('') + `<div class="row wrap">${repeat}<button class="btn-sm btn-ghost" style="margin-top:8px" data-extra="${slot.id}">+ مجموعة</button></div>`}
   </div>`;
 }
 viewWorkout.bind_ = (app, arg) => {
@@ -545,10 +590,18 @@ viewWorkout.bind_ = (app, arg) => {
   $$('[data-makeup]', app).forEach(b => b.onclick = () => { S.plan[today()] = b.dataset.makeup; touchCore(); location.hash = '#workout/' + today(); rerender(); });
   $$('[data-video]', app).forEach(b => b.onclick = () => showVideo(b.dataset.video));
   $$('[data-info]', app).forEach(b => b.onclick = () => showInfo(b.dataset.info));
-  $$('[data-alt]', app).forEach(b => b.onclick = () => showAlts(b.dataset.alt));
+  $$('[data-alt]', app).forEach(b => b.onclick = () => showAlts(b.dataset.alt, c.sel || today()));
   $$('[data-note]', app).forEach(b => b.onclick = () => editNote(b.dataset.note));
   if (!c.day || c.readOnly) return;
   const t = c.logDate; const day = c.day;
+  const ae = $('#addExtra', app); if (ae) ae.onclick = () => addExtraModal(t, day);
+  $$('[data-rmextra]', app).forEach(b => b.onclick = () => {
+    const s = S.sess[t]; const n = +b.dataset.rmextra; const id = s.extra[n];
+    const inMain = PROGRAM[day].ex.some((_, i) => slotExercise(day, i, t).id === id);
+    const has = !inMain && workingSets(s.ex[id]).length + (s.ex[id] || []).length > 0;
+    const go = () => { undoable('انشال ' + EXERCISES[id].ar, () => { s.extra.splice(n, 1); if (!inMain) { delete s.ex[id]; recomputePR(id); } touchSess(t); touchCore(); }); rerender(); };
+    if (has) confirmBox('تشيل التمرين ومجموعاته من هالحصة؟', go, 'شيله'); else go();
+  });
   const s0 = S.sess[t];
   const logSet = (exId, w, r, tp) => {
     const s = ensureSession(t, day);
@@ -580,6 +633,7 @@ viewWorkout.bind_ = (app, arg) => {
     tg.dataset.type = nx; tg.className = 'tag ' + nx; tg.textContent = nx === 'w' ? 'إحماء' : nx === 'f' ? 'فشل' : 'عادية';
   });
   $$('[data-warm]', app).forEach(b => b.onclick = () => logSet(b.dataset.warm, +b.dataset.w, +b.dataset.r, 'w'));
+  $$('[data-repeat]', app).forEach(b => b.onclick = () => logSet(b.dataset.repeat, +b.dataset.w, +b.dataset.r, b.dataset.t));
   $$('[data-extra]', app).forEach(b => b.onclick = () => setEditor(t, day, b.dataset.extra, null));
   $$('[data-edit]', app).forEach(el => el.onclick = () => setEditor(t, day, el.dataset.edit, +el.dataset.k));
   const fin = $('#finish', app); if (fin) fin.onclick = () => {
@@ -612,8 +666,8 @@ function setEditor(date, day, exId, k) {
         recomputePR(exId); touchSess(date); touchCore(); closeModal(); rerender();
       };
       const del = $('#ed', m); if (del) del.onclick = () => {
-        const s = S.sess[date]; s.ex[exId].splice(k, 1); if (!s.ex[exId].length) delete s.ex[exId];
-        recomputePR(exId); touchSess(date); touchCore(); closeModal(); rerender();
+        undoable('انحذفت المجموعة', () => { const s = S.sess[date]; s.ex[exId].splice(k, 1); if (!s.ex[exId].length) delete s.ex[exId]; recomputePR(exId); touchSess(date); touchCore(); });
+        closeModal(); rerender();
       };
     });
 }
@@ -640,8 +694,8 @@ function showVideo(exId) {
   const url = S.videos[exId] || ex.video || '';
   const id = ytId(url);
   const qAr = encodeURIComponent(`${ex.ar} طريقة الأداء الصحيح`);
-  const qEn = encodeURIComponent(`${ex.en} proper form`);
-  openModal(`<h2>${esc(ex.ar)}</h2><div class="en" style="margin-bottom:10px">${esc(ex.en)}</div>
+  const qEn = encodeURIComponent(`${ex.en || ex.ar} proper form`);
+  openModal(`<h2>${esc(ex.ar)}</h2>${ex.en ? `<div class="en" style="margin-bottom:10px">${esc(ex.en)}</div>` : ''}
     ${id ? `<div class="video-wrap"><iframe src="https://www.youtube-nocookie.com/embed/${id}?rel=0&playsinline=1" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe></div>
       <a class="btn btn-ghost btn-block" style="margin-top:8px" target="_blank" rel="noopener" href="https://www.youtube.com/watch?v=${id}">افتح في يوتيوب</a>`
       : `<div class="banner small">ما فيه مقطع مثبت لهذا التمرين للحين. ابحث، وإذا عجبك مقطع انسخ رابطه وثبّته تحت.</div>`}
@@ -649,7 +703,7 @@ function showVideo(exId) {
     <a class="btn grow" target="_blank" rel="noopener" href="https://www.youtube.com/results?search_query=${qEn}">بحث بالإنجليزي</a></div>
     <label>ما عجبك المقطع؟ الصق رابط مقطع ثاني من يوتيوب</label><div class="row"><input id="vu" placeholder="https://youtu.be/..." value="${esc(S.videos[exId] || '')}" style="direction:ltr"><button class="btn-primary" id="vs">ثبّت</button></div>
     ${S.videos[exId] ? '<button class="btn-sm btn-ghost btn-danger" id="vr" style="margin-top:8px">إلغاء التثبيت</button>' : ''}
-    <h3 style="margin-top:14px">نقاط الأداء</h3><ul>${ex.cues.map(c => `<li>${esc(c)}</li>`).join('')}</ul>`,
+    ${ex.cues.length ? `<h3 style="margin-top:14px">نقاط الأداء</h3><ul>${ex.cues.map(c => `<li>${esc(c)}</li>`).join('')}</ul>` : ''}`,
     m => {
       $('#vs', m).onclick = () => { const v = $('#vu', m).value.trim(); if (!ytId(v)) return toast('الرابط لازم يكون من يوتيوب'); S.videos[exId] = v; touchCore(); showVideo(exId); toast('تم تثبيت المقطع'); };
       const rm = $('#vr', m); if (rm) rm.onclick = () => { delete S.videos[exId]; touchCore(); showVideo(exId); };
@@ -657,24 +711,112 @@ function showVideo(exId) {
 }
 function showInfo(exId) {
   const ex = EXERCISES[exId];
-  openModal(`<h2>${esc(ex.ar)}</h2><div class="en">${esc(ex.en)}</div>
+  openModal(`<h2>${esc(ex.ar)}</h2>${ex.en ? `<div class="en">${esc(ex.en)}</div>` : '<div class="tiny muted">تمرين أضفته أنت</div>'}
     <div style="margin:12px 0">${bodySVG([ex.m[0]], ex.m.slice(1))}</div>
     <div class="chips">${ex.m.map((m, i) => `<span class="chip ${i === 0 ? 'on' : ''}">${MUSCLES[m].ar} <span class="en">${MUSCLES[m].en}</span></span>`).join('')}</div>
     <p class="tiny muted">الأخضر الغامق: العضلة الأساسية · الفاتح: عضلات مساعدة</p>
-    <h3>نقاط الأداء الصحيح</h3><ul>${ex.cues.map(c => `<li>${esc(c)}</li>`).join('')}</ul>
+    ${ex.cues.length ? `<h3>نقاط الأداء الصحيح</h3><ul>${ex.cues.map(c => `<li>${esc(c)}</li>`).join('')}</ul>` : ''}
     <p class="small muted">${ex.kind === 'c' ? 'تمرين مركب: مجموعات عادية، خلّ 1-2 تكرار احتياط ولا توصل للفشل.' : 'تمرين عزل: آخر مجموعة تقدر توصل فيها للفشل (بعد أول أسبوعين).'}</p>
-    <button class="btn btn-block" data-close>تمام</button>`);
+    ${ex.custom ? `<button class="btn btn-block" id="editEx" style="margin-bottom:8px">✏️ تعديل التمرين</button>` : ''}
+    <button class="btn btn-block" data-close>تمام</button>`, m => { const b = $('#editEx', m); if (b) b.onclick = () => customExModal({ editId: exId }); });
 }
-function showAlts(key) {
+function showAlts(key, date, scopeInit) {
   const [day, idx] = key.split(':'); const base = PROGRAM[day].ex[+idx];
-  const cur = S.swaps[key] || base.id;
-  const opts = [base.id, ...EXERCISES[base.id].alts].filter((v, i, a) => a.indexOf(v) === i);
-  openModal(`<h2>اختر بديل</h2><p class="muted small">نفس الحركة ونفس العضلات. اختيارك ينحفظ لهذا التمرين في الحصص الجاية.</p>
-    ${opts.map(id => `<div class="pick" data-pick="${id}"><div><b>${esc(EXERCISES[id].ar)}</b>${id === base.id ? ' <span class="chip">الأصلي</span>' : ''}<div class="en">${esc(EXERCISES[id].en)}</div></div>${id === cur ? '<span class="done-mark">✓</span>' : ''}</div>`).join('')}`,
-    m => $$('[data-pick]', m).forEach(p => p.onclick = () => {
-      if (p.dataset.pick === base.id) delete S.swaps[key]; else S.swaps[key] = p.dataset.pick;
-      touchCore(); closeModal(); rerender();
-    }));
+  const cur = slotExercise(day, +idx, date);
+  const bex = EXERCISES[base.id];
+  const opts = [base.id, ...bex.alts].filter((v, i, a) => a.indexOf(v) === i);
+  const mine = Object.keys(S.customEx).filter(id => !EXERCISES[id].hidden && !opts.includes(id))
+    .sort((a, b) => (EXERCISES[b].m.some(x => bex.m.includes(x)) ? 1 : 0) - (EXERCISES[a].m.some(x => bex.m.includes(x)) ? 1 : 0));
+  let scope = scopeInit || 'session';
+  const row = id => `<div class="pick" data-pick="${id}"><div><b>${esc(EXERCISES[id].ar)}</b>${id === base.id ? ' <span class="chip">الأصلي</span>' : ''}
+    ${EXERCISES[id].en ? `<div class="en">${esc(EXERCISES[id].en)}</div>` : `<div class="tiny muted">${EXERCISES[id].m.map(m => MUSCLES[m].ar).join('، ')}</div>`}</div>${id === cur.id ? '<span class="done-mark">✓</span>' : ''}</div>`;
+  openModal(`<h2>بديل: ${esc(bex.ar)}</h2>
+    <label>البديل يكون</label>
+    <div class="tabs"><button data-scope="session">لهذي الحصة بس</button><button data-scope="always">دائماً</button></div>
+    <p class="tiny muted" id="scopeHint"></p>
+    <h3>بدائل من نفس الحركة</h3>${opts.map(row).join('')}
+    ${mine.length ? `<h3 style="margin-top:12px">تمارين أضفتها أنت</h3>${mine.map(row).join('')}` : ''}
+    <button class="btn-primary btn-block" id="newEx" style="margin-top:12px">+ تمرين من عندي</button>`,
+    m => {
+      const paint = () => {
+        $$('[data-scope]', m).forEach(b => b.classList.toggle('on', b.dataset.scope === scope));
+        $('#scopeHint', m).textContent = scope === 'session' ? `يتبدل في حصة ${dLabel(date)} بس، والحصص الجاية ترجع للتمرين الأصلي.` : 'يتبدل في كل الحصص الجاية لين ترجعه.';
+      };
+      $$('[data-scope]', m).forEach(b => b.onclick = () => { scope = b.dataset.scope; paint(); }); paint();
+      const apply = id => {
+        if (scope === 'session') {
+          const ss = ensureSession(date, day); ss.swaps = ss.swaps || {};
+          if (id === (S.swaps[key] || base.id)) delete ss.swaps[key]; else ss.swaps[key] = id;
+          touchSess(date);
+        } else {
+          if (id === base.id) delete S.swaps[key]; else S.swaps[key] = id;
+          if (S.sess[date]?.swaps?.[key]) { delete S.sess[date].swaps[key]; touchSess(date); }
+          touchCore();
+        }
+        closeModal(); rerender();
+        toast(scope === 'session' ? 'تم التبديل لهذي الحصة' : 'تم التبديل دائماً');
+      };
+      $$('[data-pick]', m).forEach(p => p.onclick = () => apply(p.dataset.pick));
+      $('#newEx', m).onclick = () => customExModal({ primary: bex.m[0], onSave: id => apply(id), onCancel: () => showAlts(key, date, scope) });
+    });
+}
+/* إضافة أو تعديل تمرين من عندك */
+function customExModal(o = {}) {
+  const ed = o.editId ? S.customEx[o.editId] : null;
+  let kind = ed ? ed.kind : null;
+  let sec = ed ? ed.m.slice(1) : [];
+  const prim = ed ? ed.m[0] : (o.primary || 'chest');
+  openModal(`<h2>${ed ? 'تعديل التمرين' : 'تمرين من عندي'}</h2>
+    <label>اسم التمرين</label><input id="cn" value="${esc(ed ? ed.ar : '')}" placeholder="مثلاً: تجديف دمبل على البنش المائل">
+    <label>العضلة الأساسية</label><select id="cm">${Object.entries(MUSCLES).map(([k, v]) => `<option value="${k}" ${k === prim ? 'selected' : ''}>${v.ar}</option>`).join('')}</select>
+    <label>عضلات مساعدة (اختياري)</label><div class="chips" id="cs">${Object.entries(MUSCLES).map(([k, v]) => `<button class="chip ${sec.includes(k) ? 'on' : ''}" data-sec="${k}">${v.ar}</button>`).join('')}</div>
+    <label>كم مفصل يتحرك وأنت تأدي التمرين؟</label>
+    <div class="tabs"><button data-kind="i">مفصل واحد<br><span class="tiny">عزل، مثل البايسبس</span></button><button data-kind="c">أكثر من مفصل<br><span class="tiny">مركب، مثل البنش</span></button></div>
+    <label class="row" style="color:var(--text);font-size:15px;margin-top:10px"><input type="checkbox" id="cbw" style="width:auto" ${ed && ed.bw ? 'checked' : ''}> بوزن الجسم (مثل الضغط أو العقلة)</label>
+    <label>رابط مقطع شرح من يوتيوب (اختياري)</label><input id="cv" style="direction:ltr" placeholder="https://youtu.be/..." value="${esc(ed ? (S.videos[o.editId] || '') : '')}">
+    <button class="btn-primary btn-block" id="csave" style="margin-top:14px">${ed ? 'حفظ التعديل' : 'حفظ واستخدمه'}</button>
+    ${o.onCancel ? '<button class="btn btn-block" id="cback" style="margin-top:8px">رجوع</button>' : ''}`,
+    m => {
+      const paintKind = () => $$('[data-kind]', m).forEach(b => b.classList.toggle('on', b.dataset.kind === kind));
+      $$('[data-kind]', m).forEach(b => b.onclick = () => { kind = b.dataset.kind; paintKind(); }); paintKind();
+      $$('[data-sec]', m).forEach(b => b.onclick = () => { const k = b.dataset.sec; sec = sec.includes(k) ? sec.filter(x => x !== k) : [...sec, k]; b.classList.toggle('on'); });
+      const back = $('#cback', m); if (back) back.onclick = () => o.onCancel();
+      $('#csave', m).onclick = () => {
+        const name = $('#cn', m).value.trim(); const p = $('#cm', m).value; const v = $('#cv', m).value.trim();
+        if (!name) return toast('اكتب اسم التمرين');
+        if (!kind) return toast('اختر كم مفصل يتحرك');
+        if (v && !ytId(v)) return toast('رابط الفيديو لازم يكون من يوتيوب');
+        const dup = Object.entries(EXERCISES).find(([id, e]) => e.ar.trim() === name && id !== o.editId);
+        if (dup) return toast('فيه تمرين بنفس الاسم، اختره من القائمة أو غيّر الاسم', 3200);
+        const id = o.editId || ('u_' + uid());
+        S.customEx[id] = { ar: name, m: [p, ...sec.filter(x => x !== p)], kind, bw: $('#cbw', m).checked, hidden: ed ? !!ed.hidden : false };
+        if (v) S.videos[id] = v; else if (ed) delete S.videos[id];
+        applyCustom(); touchCore();
+        if (o.onSave) o.onSave(id); else { closeModal(); rerender(); toast('تم الحفظ'); }
+      };
+    });
+}
+/* تمرين إضافي زيادة على الجدول */
+function addExtraModal(date, day) {
+  const inSess = new Set([...PROGRAM[day].ex.map((_, i) => slotExercise(day, i, date).id), ...(S.sess[date]?.extra || [])]);
+  const all = Object.keys(EXERCISES).filter(id => !EXERCISES[id].hidden && !inSess.has(id))
+    .sort((a, b) => (EXERCISES[b].custom ? 1 : 0) - (EXERCISES[a].custom ? 1 : 0));
+  openModal(`<h2>تمرين إضافي</h2><p class="muted small">اختر التمرين اللي لعبته زيادة، أو أضف تمرين جديد من عندك.</p>
+    <button class="btn-primary btn-block" id="newEx2">+ تمرين جديد من عندي</button>
+    <input id="xq" placeholder="ابحث: صدر، كتف، بايسبس، اسم التمرين..." style="margin-top:10px" autocomplete="off">
+    <div class="list-pick" id="xl" style="margin-top:8px"></div>`,
+    m => {
+      const add = id => { const ss = ensureSession(date, day); ss.extra = ss.extra || []; if (!ss.extra.includes(id)) ss.extra.push(id); touchSess(date); closeModal(); rerender(); toast('أضيف ' + EXERCISES[id].ar); };
+      const draw = q => {
+        q = q.trim();
+        const list = all.filter(id => { const e = EXERCISES[id]; return !q || match(e.ar, q) || match(e.en, q) || e.m.some(x => match(MUSCLES[x].ar, q)); });
+        $('#xl', m).innerHTML = list.length ? list.map(id => `<div class="pick" data-x="${id}"><div><b>${esc(EXERCISES[id].ar)}</b><div class="tiny muted">${EXERCISES[id].m.slice(0, 2).map(x => MUSCLES[x].ar).join('، ')}${EXERCISES[id].custom ? ' · من عندك' : ''}</div></div></div>`).join('')
+          : `<p class="muted small">ما لقيت "${esc(q)}". أضفه كتمرين جديد من الزر فوق.</p>`;
+        $$('[data-x]', m).forEach(el => el.onclick = () => add(el.dataset.x));
+      };
+      $('#xq', m).oninput = e => draw(e.target.value); draw('');
+      $('#newEx2', m).onclick = () => customExModal({ onSave: id => add(id), onCancel: () => addExtraModal(date, day) });
+    });
 }
 function editNote(exId) {
   openModal(`<h2>ملاحظة: ${esc(EXERCISES[exId].ar)}</h2><p class="muted small">مثل: المقعد على رقم 4، قبضة أوسع من الكتف بشبر</p>
@@ -738,7 +880,7 @@ viewFood.bind_ = (app) => {
   $$('[data-day]', app).forEach(b => b.onclick = () => { const nd = addDays(t, +b.dataset.day); if (nd > today()) return; location.hash = '#food/' + nd; });
   $$('[data-add]', app).forEach(b => b.onclick = () => addFoodModal(t, b.dataset.add));
   $$('[data-item]', app).forEach(el => el.onclick = () => editEntry(t, el.dataset.item));
-  $$('[data-quick]', app).forEach(b => b.onclick = () => { const f = foodById(b.dataset.quick); addFoodEntry(t, 'snack', f, +b.dataset.q); rerender(); toast('أضيف ' + f.name); });
+  $$('[data-quick]', app).forEach(b => b.onclick = () => { const f = foodById(b.dataset.quick); undoable('أضيف ' + f.name, () => addFoodEntry(t, 'snack', f, +b.dataset.q)); rerender(); });
   $$('[data-w]', app).forEach(b => b.onclick = () => { const d = diaryDay(t, true); d.water = Math.max(0, (d.water || 0) + +b.dataset.w); touchDiary(t); rerender(); });
   $$('[data-supp]', app).forEach(b => b.onclick = () => { const d = diaryDay(t, true); d.supps = d.supps || {}; d.supps[b.dataset.supp] = !d.supps[b.dataset.supp]; touchDiary(t); rerender(); });
   $$('[data-savetpl]', app).forEach(b => b.onclick = () => saveTemplate(t, b.dataset.savetpl));
@@ -747,9 +889,8 @@ viewFood.bind_ = (app) => {
     const y = diaryDay(addDays(t, -1));
     if (!y.items.length) return toast('ما فيه أكل مسجل أمس');
     confirmBox(`تنسخ ${y.items.length} أكلات من أمس لهذا اليوم؟`, () => {
-      const d = diaryDay(t, true);
-      y.items.forEach(i => d.items.push({ ...i, id: uid(), ts: Date.now() }));
-      touchDiary(t); rerender(); toast('تم النسخ');
+      undoable('تم النسخ', () => { const d = diaryDay(t, true); y.items.forEach(i => d.items.push({ ...i, id: uid(), ts: Date.now() })); touchDiary(t); });
+      rerender();
     }, 'انسخ');
   };
 };
@@ -762,7 +903,7 @@ function editEntry(date, id) {
     <div class="row" style="margin-top:14px"><button class="btn-primary grow" id="s">حفظ</button><button class="btn-danger grow" id="del">حذف</button></div>`,
     m => {
       $('#s', m).onclick = () => { const q = num($('#q', m).value); if (!q) return; Object.assign(it, calc(food, q), { qty: q, meal: $('#ml', m).value }); touchDiary(date); closeModal(); rerender(); };
-      $('#del', m).onclick = () => { d.items = d.items.filter(i => i.id !== id); touchDiary(date); closeModal(); rerender(); };
+      $('#del', m).onclick = () => { undoable('انحذف ' + it.name, () => { d.items = d.items.filter(i => i.id !== id); touchDiary(date); }); closeModal(); rerender(); };
     });
 }
 function saveTemplate(date, meal) {
@@ -788,20 +929,23 @@ function templatesModal(date, meal) {
     m => {
       $$('[data-usetpl]', m).forEach(el => el.onclick = () => {
         const tp = S.templates[el.dataset.usetpl]; const ml = $('#tm', m).value;
-        tp.items.forEach(x => { const f = foodById(x.fid); if (f) addFoodEntry(date, ml, f, x.qty); });
-        closeModal(); rerender(); toast('أضيفت ' + tp.name);
+        undoable('أضيفت ' + tp.name, () => tp.items.forEach(x => { const f = foodById(x.fid); if (f) addFoodEntry(date, ml, f, x.qty); }));
+        closeModal(); rerender();
       });
       $$('[data-deltpl]', m).forEach(b => b.onclick = () => { delete S.templates[b.dataset.deltpl]; touchCore(); templatesModal(date, meal); });
     });
 }
-function addFoodModal(date, meal, tab = 'search', prefill = null) {
+const foodRow = f => `<div class="pick" data-f="${f.id}"><div><b>${esc(f.name)}</b><div class="tiny muted">${f.per === 'unit' ? 'لكل ' + esc(f.unit || 'حصة') + (f.size ? ' (' + esc(f.size) + ')' : '') : 'لكل 100 جم'}: ${fmt(f.kcal)} سعرة · ب ${fmt(f.p)}</div></div></div>`;
+function addFoodModal(date, meal, tab = 'search', prefill = null, onDone = null) {
   const tabs = [['search', 'بحث'], ['scan', 'باركود'], ['new', 'جديد'], ['tpl', 'وجباتي']];
   let body = '';
   if (tab === 'search') {
     body = `<input id="fq" placeholder="ابحث: رز، دجاج، بيض..." autocomplete="off"><div class="list-pick" id="fl" style="margin-top:8px"></div>`;
   } else if (tab === 'scan') {
-    body = `<div id="reader"></div><p class="muted small" id="scanMsg">وجّه الكاميرا على الباركود...</p>
-      <label>أو اكتب رقم الباركود</label><div class="row"><input id="bc" inputmode="numeric" style="direction:ltr"><button class="btn-primary" id="bcs">بحث</button></div>`;
+    body = `<div class="tabs"><button data-mode="one" class="${scanMulti ? '' : 'on'}">منتج واحد</button><button data-mode="multi" class="${scanMulti ? 'on' : ''}">أكثر من منتج</button></div>
+      <div id="reader"></div><p class="muted small" id="scanMsg">${scanMulti ? 'صوّر المنتجات ورا بعض، وتنضاف للقائمة تحت.' : 'وجّه الكاميرا على الباركود...'}</p>
+      <label>أو اكتب رقم الباركود</label><div class="row"><input id="bc" inputmode="numeric" style="direction:ltr"><button class="btn-primary" id="bcs">${scanMulti ? 'أضف للقائمة' : 'بحث'}</button></div>
+      ${scanMulti ? '<div id="mlist" style="margin-top:10px"></div><button class="btn-primary btn-block" id="maddall" style="margin-top:10px" disabled>أضف الكل</button>' : ''}`;
   } else if (tab === 'new') {
     const p = prefill || {};
     body = `${p.barcode ? `<p class="tiny muted">باركود: <span class="en">${esc(p.barcode)}</span>${p.fromOFF ? ' · القيم من Open Food Facts، راجعها مع الملصق' : ''}</p>` : ''}
@@ -823,11 +967,17 @@ function addFoodModal(date, meal, tab = 'search', prefill = null) {
         const all = Object.values(allFoods());
         const draw = q => {
           q = q.trim();
-          let list;
-          if (!q) list = [...S.recent.map(foodById).filter(Boolean), ...all.filter(f => !S.recent.includes(f.id))];
-          else list = all.filter(f => f.name.includes(q) || (f.barcode || '').includes(q));
-          $('#fl', m).innerHTML = (list.length ? list.slice(0, 60).map(f => `<div class="pick" data-f="${f.id}"><div><b>${esc(f.name)}</b><div class="tiny muted">${f.per === 'unit' ? 'لكل ' + esc(f.unit || 'حصة') : 'لكل 100 جم'}: ${fmt(f.kcal)} سعرة · ب ${fmt(f.p)}</div></div>${S.recent.includes(f.id) ? '<span class="tiny muted">مؤخراً</span>' : ''}</div>`).join('')
-            : `<p class="muted small">ما لقيت "${esc(q)}". جرب تبويب «جديد» وأضفه.</p>`);
+          let html;
+          if (!q) {
+            const rec = S.recent.map(foodById).filter(Boolean);
+            const used = new Set(rec.map(f => f.id));
+            const groups = [['مؤخراً', rec], ['أكلاتي', Object.values(S.foods).filter(f => !used.has(f.id))], ['منتجات جاهزة', READY_FOODS.filter(f => !used.has(f.id))], ['أكلات أساسية', BASE_FOODS.filter(f => !f.ready && !used.has(f.id))]];
+            html = groups.filter(g => g[1].length).map(([h, l]) => `<h3 class="grp">${h}</h3>` + l.map(foodRow).join('')).join('');
+          } else {
+            const list = all.filter(f => match(f.name, q) || (f.barcode || '').includes(q));
+            html = list.length ? list.slice(0, 60).map(foodRow).join('') : `<p class="muted small">ما لقيت "${esc(q)}". جرب تبويب «جديد» وأضفه.</p>`;
+          }
+          $('#fl', m).innerHTML = html;
           $$('[data-f]', m).forEach(el => el.onclick = () => qtyModal(date, meal, foodById(el.dataset.f)));
         };
         $('#fq', m).oninput = e => draw(e.target.value); draw('');
@@ -842,22 +992,30 @@ function addFoodModal(date, meal, tab = 'search', prefill = null) {
           if (f.per === 'unit') f.unit = $('#nunit', m).value.trim() || 'حصة';
           const g = num($('#ng', m).value); if (g) f.grams = g;
           if (p.barcode) f.barcode = p.barcode;
-          S.foods[f.id] = f; touchCore(); qtyModal(date, meal, f);
+          S.foods[f.id] = f; touchCore(); qtyModal(date, meal, f, { onDone });
         };
       }
-      if (tab === 'scan') return startScanner(m, code => lookupBarcode(date, meal, code));
+      if (tab === 'scan') {
+        $$('[data-mode]', m).forEach(b => b.onclick = () => { scanMulti = b.dataset.mode === 'multi'; addFoodModal(date, meal, 'scan'); });
+        if (!scanMulti) return startScanner(m, code => lookupBarcode(date, meal, code));
+        return multiScan(m, date, meal);
+      }
     });
 }
-let scannerLib = null;
+let scanMulti = false;
 function loadScript(src) {
   return new Promise((res, rej) => { if ($(`script[src="${src}"]`)) return res(); const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('load ' + src)); document.head.appendChild(s); });
 }
-function startScanner(m, onCode) {
-  let qr = null, stopped = false, handled = false;
+function startScanner(m, onCode, multi) {
+  let qr = null, stopped = false, handled = false, lastCode = '', lastAt = 0;
   const msg = t => { const el = $('#scanMsg', m); if (el) el.textContent = t; };
-  const done = code => { if (handled) return; handled = true; stop(); onCode(code); };
+  const done = code => {
+    code = String(code).trim(); if (!code) return;
+    if (multi) { const now = Date.now(); if (code === lastCode && now - lastAt < 3000) return; lastCode = code; lastAt = now; try { navigator.vibrate && navigator.vibrate(60); } catch (e) {} onCode(code); return; }
+    if (handled) return; handled = true; stop(); onCode(code);
+  };
   const stop = () => { stopped = true; if (qr) { qr.stop().catch(() => {}).finally(() => { try { qr.clear(); } catch (e) {} }); qr = null; } };
-  $('#bcs', m).onclick = () => { const v = $('#bc', m).value.trim(); if (v) done(v); };
+  $('#bcs', m).onclick = () => { const v = $('#bc', m).value.trim(); if (v) { if (multi) lastCode = ''; done(v); $('#bc', m).value = ''; } };
   (async () => {
     try {
       await loadScript('https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js');
@@ -872,41 +1030,133 @@ function startScanner(m, onCode) {
   })();
   return stop;
 }
-async function lookupBarcode(date, meal, code) {
+/* يدور على الباركود: منتجاتك المحفوظة أول، بعدين قاعدة Open Food Facts */
+function localBarcode(code) {
   const mine = Object.values(S.foods).find(f => f.barcode === code);
-  if (mine) return qtyModal(date, meal, mine);
-  openModal(`<h2>أبحث عن المنتج...</h2><p class="muted en">${esc(code)}</p>`);
+  if (mine) return mine;
+  const linked = S.barcodes[code] && foodById(S.barcodes[code]);
+  return linked || null;
+}
+async function resolveBarcode(code) {
+  const loc = localBarcode(code);
+  if (loc) return { food: loc };
+  if (!navigator.onLine) return { prefill: { barcode: code }, offline: true };
   try {
-    const r = await fetch(`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(code)}.json?fields=product_name,product_name_ar,brands,nutriments,serving_quantity`);
+    const r = await fetch(`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(code)}.json?fields=product_name,product_name_ar,brands,nutriments,serving_quantity,product_quantity,product_quantity_unit`);
     const j = await r.json();
-    if (j.status !== 1 || !j.product) throw new Error('nf');
+    if (j.status !== 1 || !j.product) return { prefill: { barcode: code } };
     const p = j.product, n = p.nutriments || {};
-    let kcal = n['energy-kcal_100g']; if (kcal == null && n['energy_100g'] != null) kcal = n['energy_100g'] / 4.184;
-    const name = [p.product_name_ar || p.product_name, p.brands ? '(' + p.brands.split(',')[0] + ')' : ''].filter(Boolean).join(' ');
-    addFoodModal(date, meal, 'new', { barcode: code, fromOFF: true, name, per: 'g', kcal: kcal != null ? r1(kcal) : '', p: r1(n.proteins_100g ?? 0), c: r1(n.carbohydrates_100g ?? 0), f: r1(n.fat_100g ?? 0), grams: p.serving_quantity ? r1(+p.serving_quantity) : '' });
-    if (kcal == null) toast('المنتج موجود بس بدون سعرات، اكتبها من الملصق');
+    let kcal = n['energy-kcal_100g'];
+    if (kcal == null && n['energy-kj_100g'] != null) kcal = n['energy-kj_100g'] / 4.184;
+    if (kcal == null && n['energy_100g'] != null) kcal = n['energy_100g'] / 4.184;
+    const name = [p.product_name_ar || p.product_name, p.brands ? '(' + p.brands.split(',')[0] + ')' : ''].filter(Boolean).join(' ').trim();
+    const pq = +p.product_quantity; const unit = String(p.product_quantity_unit || '').toLowerCase();
+    const pack = pq > 0 && pq < 5000 && (!unit || unit === 'g' || unit === 'ml') ? r1(pq) : (p.serving_quantity ? r1(+p.serving_quantity) : null);
+    const vals = { kcal: kcal != null ? r1(kcal) : null, p: n.proteins_100g, c: n.carbohydrates_100g, f: n.fat_100g };
+    const complete = name && [vals.kcal, vals.p, vals.c, vals.f].every(v => v != null && !isNaN(+v));
+    if (!complete) return { prefill: { barcode: code, fromOFF: true, name, per: 'g', kcal: vals.kcal ?? '', p: vals.p != null ? r1(+vals.p) : '', c: vals.c != null ? r1(+vals.c) : '', f: vals.f != null ? r1(+vals.f) : '', grams: pack || '' } };
+    const food = { id: 'c_' + uid(), name, per: 'g', kcal: vals.kcal, p: r1(+vals.p), c: r1(+vals.c), f: r1(+vals.f), barcode: code, src: 'off' };
+    if (pack) food.grams = pack;
+    if (unit === 'ml') food.unitLabel = 'مل';
+    S.foods[food.id] = food; touchCore();
+    return { food };
   } catch (e) {
-    addFoodModal(date, meal, 'new', { barcode: code });
-    toast(navigator.onLine ? 'المنتج مو موجود بالقاعدة. أدخله من الملصق مرة وحدة وينحفظ' : 'ما فيه نت. أدخل القيم من الملصق', 3500);
+    return { prefill: { barcode: code }, offline: !navigator.onLine };
   }
 }
-function qtyModal(date, meal, food) {
+async function lookupBarcode(date, meal, code, onDone) {
+  const loc = localBarcode(code);
+  if (loc) return qtyModal(date, meal, loc, { onDone });
+  openModal(`<h2>أبحث عن المنتج...</h2><p class="muted en">${esc(code)}</p>`);
+  const r = await resolveBarcode(code);
+  if (r.food) return qtyModal(date, meal, r.food, { onDone });
+  linkModal(date, meal, code, r.prefill, onDone, r.offline);
+}
+/* باركود غير معروف: تربطه بمنتج من القائمة، أو تدخله من الملصق */
+function linkModal(date, meal, code, prefill, onDone, offline) {
+  const cands = [...READY_FOODS, ...Object.values(S.foods).filter(f => !f.barcode)];
+  openModal(`<h2>ما عرفت هالمنتج</h2><p class="tiny muted">باركود: <span class="en">${esc(code)}</span>${offline ? ' · ما فيه نت' : ''}</p>
+    <p class="small">هو واحد من هالمنتجات؟ قارن <b>الشركة والنكهة والحجم</b> مع اللي في يدك. لو اخترته، ينربط الباركود فيه ويعرفه التطبيق على طول المرات الجاية.</p>
+    <input id="lq" placeholder="ابحث: نادك، المراعي، زبادي..." autocomplete="off">
+    <div class="list-pick" id="ll" style="margin-top:8px"></div>
+    <button class="btn-primary btn-block" id="lnew" style="margin-top:10px">مو موجود، بدخله من الملصق</button>`,
+    m => {
+      const draw = q => {
+        const list = cands.filter(f => !q.trim() || match(f.name, q));
+        $('#ll', m).innerHTML = list.length ? list.map(foodRow).join('') : '<p class="muted small">ما فيه نتائج.</p>';
+        $$('[data-f]', m).forEach(el => el.onclick = () => {
+          const f = foodById(el.dataset.f);
+          if (f.id.startsWith('c_')) { S.foods[f.id].barcode = code; } else S.barcodes[code] = f.id;
+          touchCore(); toast('تم ربط الباركود بـ ' + f.name);
+          qtyModal(date, meal, f, { onDone });
+        });
+      };
+      $('#lq', m).oninput = e => draw(e.target.value); draw('');
+      $('#lnew', m).onclick = () => addFoodModal(date, meal, 'new', prefill || { barcode: code }, onDone);
+    });
+}
+/* مسح أكثر من منتج */
+function multiScan(m, date, meal) {
+  const rows = [];
+  const draw = () => {
+    const box = $('#mlist', m); if (!box) return;
+    box.innerHTML = rows.length ? rows.map((r, i) => `<div class="item"><div class="grow"><div class="nm">${r.loading ? '... ' + esc(r.code) : r.food ? esc(r.food.name) : 'منتج غير معروف'}</div>
+        <div class="tiny muted">${r.food ? (r.food.per === 'unit' ? esc(r.food.unit || 'حصة') : 'جم') : r.loading ? 'أبحث...' : esc(r.code) + ' · تحدده بعد ما تضغط «أضف الكل»'}</div></div>
+        ${r.food ? `<input data-mq="${i}" inputmode="decimal" value="${r.qty}" style="width:70px;text-align:center">` : ''}
+        <button class="btn-sm btn-ghost" data-mrm="${i}">✕</button></div>`).join('') : '<p class="muted small">القائمة فاضية.</p>';
+    $$('[data-mq]', box).forEach(inp => inp.oninput = () => { rows[+inp.dataset.mq].qty = num(inp.value) || 0; });
+    $$('[data-mrm]', box).forEach(b => b.onclick = () => { rows.splice(+b.dataset.mrm, 1); draw(); });
+    const btn = $('#maddall', m); btn.disabled = !rows.length || rows.some(r => r.loading);
+    btn.textContent = `أضف الكل (${rows.length})`;
+  };
+  draw();
+  const stop = startScanner(m, async code => {
+    const row = { code, loading: true }; rows.push(row); draw();
+    const r = await resolveBarcode(code);
+    row.loading = false;
+    if (r.food) { row.food = r.food; row.qty = S.lastQty[r.food.id] || (r.food.per === 'unit' ? 1 : (r.food.grams || 100)); }
+    else row.prefill = r.prefill;
+    draw();
+  }, true);
+  $('#maddall', m).onclick = () => {
+    const known = rows.filter(r => r.food && r.qty > 0); const unknown = rows.filter(r => !r.food && !r.loading);
+    stop();
+    if (known.length) undoable(`أضيف ${known.length} منتجات`, () => known.forEach(r => addFoodEntry(date, meal, r.food, r.qty)));
+    const next = () => {
+      const u = unknown.shift();
+      if (!u) { closeModal(); rerender(); return; }
+      linkModal(date, meal, u.code, u.prefill, next);
+    };
+    next();
+  };
+  return stop;
+}
+function qtyModal(date, meal, food, opts = {}) {
   const last = S.lastQty[food.id];
   const def = last || (food.per === 'unit' ? 1 : (food.grams || 100));
   const u = food.per === 'unit' ? (food.unit || 'حصة') : (food.unitLabel && food.unitLabel.startsWith('مل') ? 'مل' : 'جم');
-  const quick = food.per === 'unit' ? [0.5, 1, 2, 3] : [food.grams, 50, 100, 150, 200].filter((v, i, a) => v && a.indexOf(v) === i);
-  openModal(`<h2>${esc(food.name)}</h2><p class="muted small">${food.per === 'unit' ? 'لكل ' + esc(u) : 'لكل 100 ' + u}: ${fmt(food.kcal)} سعرة · ب ${fmt(food.p)} · ك ${fmt(food.c)} · د ${fmt(food.f)}</p>
+  const quick = food.per === 'unit' ? [[0.5, 'نص'], [1, '1'], [2, '2'], [3, '3']]
+    : food.grams ? [[food.grams, `العبوة (${fmt(food.grams)})`], [r1(food.grams / 2), `نصها (${fmt(food.grams / 2)})`], [100, '100']]
+    : [[50, '50'], [100, '100'], [150, '150'], [200, '200']];
+  openModal(`<h2>${esc(food.name)}</h2><p class="muted small">${food.per === 'unit' ? 'لكل ' + esc(u) + (food.size ? ' (' + esc(food.size) + ')' : '') : 'لكل 100 ' + u}: ${fmt(food.kcal)} سعرة · ب ${fmt(food.p)} · ك ${fmt(food.c)} · د ${fmt(food.f)}</p>
+    ${food.note ? `<p class="tiny muted">${esc(food.note)}</p>` : ''}
+    ${food.src === 'off' ? '<p class="tiny" style="color:var(--warn)">القيم من قاعدة بيانات عامة. أول مرة قارنها مع الملصق، ولو فيه فرق اضغط «تعديل القيم».</p>' : ''}
     <label>الكمية (${esc(u)})</label><input id="q" inputmode="decimal" value="${def}">
-    <div class="chips" style="margin-top:8px">${quick.map(v => `<button class="chip" data-q="${v}">${fmt(v)}${food.per !== 'unit' && v === food.grams ? ' (حصة)' : ''}</button>`).join('')}</div>
+    <div class="chips" style="margin-top:8px">${quick.map(([v, l]) => `<button class="chip" data-q="${v}">${l}</button>`).join('')}</div>
     <div class="kpi" style="margin-top:12px" id="pv"></div>
     <label>الوجبة</label><select id="ml">${MEALS.map(m => `<option value="${m.id}" ${m.id === meal ? 'selected' : ''}>${m.ar}</option>`).join('')}</select>
     <button class="btn-primary btn-block" id="add" style="margin-top:12px">أضف</button>
-    ${food.id.startsWith('c_') ? '<button class="btn-sm btn-ghost btn-block" id="editf" style="margin-top:8px">تعديل قيم هذا الأكل</button>' : ''}`,
+    ${food.id.startsWith('c_') ? '<button class="btn-sm btn-ghost btn-block" id="editf" style="margin-top:8px">تعديل القيم</button>' : ''}`,
     m => {
       const upd = () => { const q = num($('#q', m).value) || 0; const v = calc(food, q); $('#pv', m).innerHTML = `<div><span class="muted small">سعرات</span><b>${fmt(v.kcal)}</b></div><div><span class="muted small">بروتين</span><b>${fmt(v.p)}</b></div><div><span class="muted small">كارب</span><b>${fmt(v.c)}</b></div><div><span class="muted small">دهون</span><b>${fmt(v.f)}</b></div>`; };
       $('#q', m).oninput = upd; upd();
       $$('[data-q]', m).forEach(b => b.onclick = () => { $('#q', m).value = b.dataset.q; upd(); });
-      $('#add', m).onclick = () => { const q = num($('#q', m).value); if (!q || q <= 0) return toast('اكتب الكمية'); addFoodEntry(date, $('#ml', m).value, food, q); closeModal(); rerender(); toast('تمت الإضافة'); };
+      $('#add', m).onclick = () => {
+        const q = num($('#q', m).value); if (!q || q <= 0) return toast('اكتب الكمية');
+        const ml = $('#ml', m).value;
+        undoable('أضيف ' + food.name, () => addFoodEntry(date, ml, food, q));
+        if (opts.onDone) opts.onDone(); else { closeModal(); rerender(); }
+      };
       const ef = $('#editf', m); if (ef) ef.onclick = () => editFoodModal(date, meal, food);
     });
 }
@@ -918,7 +1168,7 @@ function editFoodModal(date, meal, food) {
     <div class="row"><div class="grow"><label>كارب</label><input id="nc" inputmode="decimal" value="${food.c}"></div><div class="grow"><label>دهون</label><input id="nf" inputmode="decimal" value="${food.f}"></div></div>
     <div class="row" style="margin-top:12px"><button class="btn-primary grow" id="s">حفظ</button><button class="btn-danger grow" id="d">حذف من أكلاتي</button></div>`,
     m => {
-      $('#s', m).onclick = () => { Object.assign(food, { name: $('#nn', m).value.trim() || food.name, kcal: num($('#nk', m).value) ?? food.kcal, p: num($('#np', m).value) ?? 0, c: num($('#nc', m).value) ?? 0, f: num($('#nf', m).value) ?? 0 }); S.foods[food.id] = food; touchCore(); qtyModal(date, meal, food); };
+      $('#s', m).onclick = () => { Object.assign(food, { name: $('#nn', m).value.trim() || food.name, kcal: num($('#nk', m).value) ?? food.kcal, p: num($('#np', m).value) ?? 0, c: num($('#nc', m).value) ?? 0, f: num($('#nf', m).value) ?? 0 }); delete food.src; S.foods[food.id] = food; touchCore(); qtyModal(date, meal, food); };
       $('#d', m).onclick = () => confirmBox('تحذف هذا الأكل من قائمتك؟ (السجلات القديمة تبقى)', () => { delete S.foods[food.id]; S.recent = S.recent.filter(x => x !== food.id); touchCore(); toast('تم الحذف'); });
     });
 }
@@ -1053,6 +1303,12 @@ function viewMore() {
   <div class="card"><h2>البرنامج</h2><label>تاريخ بداية البرنامج (يحدد أسبوع التعود)</label><input type="date" id="sd" value="${S.cfg.startDate}">
     <button class="btn btn-block" id="sdsave" style="margin-top:10px">حفظ</button>
     ${Object.keys(S.swaps).length ? `<button class="btn-sm btn-ghost btn-block" id="rsw" style="margin-top:8px">رجّع كل التمارين للأصلية (${Object.keys(S.swaps).length} بدائل)</button>` : ''}</div>
+  <div class="card"><h2>تماريني المضافة</h2>
+    ${Object.keys(S.customEx).length ? Object.entries(S.customEx).map(([id, c]) => `<div class="item"><div><div class="nm" style="${c.hidden ? 'opacity:.5' : ''}">${esc(c.ar)}</div><div class="tiny muted">${MUSCLES[c.m[0]].ar} · ${c.kind === 'c' ? 'مركب' : 'عزل'}${c.bw ? ' · وزن الجسم' : ''}${c.hidden ? ' · مخفي' : ''}</div></div>
+      <div class="row"><button class="btn-sm" data-cedit="${id}">تعديل</button><button class="btn-sm btn-ghost" data-chide="${id}">${c.hidden ? 'إظهار' : 'إخفاء'}</button></div></div>`).join('')
+      : '<p class="muted small">ما أضفت تمارين للحين. تقدر تضيف من زر «بديل» أو «تمرين إضافي» في صفحة التمرين، أو من هنا.</p>'}
+    <button class="btn btn-block" id="caddx" style="margin-top:8px">+ إضافة تمرين</button>
+    <p class="tiny muted">الإخفاء يشيله من القوائم بس، وسجلاته القديمة تبقى.</p></div>
   <div class="card"><h2>المكملات</h2><div class="chips" id="sl">${S.cfg.supps.map(s => `<span class="chip">${esc(s.name)} <button class="btn-sm" style="padding:0 6px" data-rs="${s.id}">✕</button></span>`).join('')}</div>
     <div class="row" style="margin-top:8px"><input id="sn" placeholder="اسم مكمل"><button id="sa">إضافة</button></div></div>
   <div class="card"><h2>المزامنة (Firebase)</h2>
@@ -1084,6 +1340,9 @@ viewMore.bind_ = app => {
   };
   $('#sdsave', app).onclick = () => { const v = $('#sd', app).value; if (v) { S.cfg.startDate = v; touchCore(); toast('تم'); } };
   const rsw = $('#rsw', app); if (rsw) rsw.onclick = () => confirmBox('ترجع كل التمارين للأصلية؟', () => { S.swaps = {}; touchCore(); rerender(); });
+  $$('[data-cedit]', app).forEach(b => b.onclick = () => customExModal({ editId: b.dataset.cedit }));
+  $$('[data-chide]', app).forEach(b => b.onclick = () => { const c = S.customEx[b.dataset.chide]; c.hidden = !c.hidden; applyCustom(); touchCore(); rerender(); });
+  $('#caddx', app).onclick = () => customExModal({});
   $$('[data-rs]', app).forEach(b => b.onclick = () => { S.cfg.supps = S.cfg.supps.filter(s => s.id !== b.dataset.rs); touchCore(); rerender(); });
   $('#sa', app).onclick = () => { const n = $('#sn', app).value.trim(); if (!n) return; S.cfg.supps.push({ id: 's_' + uid(), name: n }); touchCore(); rerender(); };
   $('#exj', app).onclick = () => download(`tamreeni-backup-${today()}.json`, JSON.stringify(S, null, 1), 'application/json');
@@ -1117,12 +1376,39 @@ viewMore.bind_ = app => {
   const sout = $('#sout', app); if (sout) sout.onclick = () => Sync.signOut();
   const fbrm = $('#fbrm', app); if (fbrm) fbrm.onclick = () => confirmBox('تشيل إعداد المزامنة؟ بياناتك تبقى على الجهاز.', () => { S.cfg.fb = null; touchCore(); location.reload(); });
 };
-function load2() { const d = defaultState(); for (const k in d) if (S[k] === undefined) S[k] = d[k]; for (const k in d.cfg) if (S.cfg[k] === undefined) S.cfg[k] = d.cfg[k]; }
+function load2() { const d = defaultState(); for (const k in d) if (S[k] === undefined) S[k] = d[k]; for (const k in d.cfg) if (S.cfg[k] === undefined) S.cfg[k] = d.cfg[k]; applyCustom(); }
 function download(name, text, type) {
   const blob = new Blob([text], { type }); const a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
 }
 
+/* دمج نسختين من نفس الجزء: السحابة تكسب عند التعارض، وما يضيع شي موجود في وحدة بس */
+function mergePart(key, local, remote) {
+  local = local || {}; remote = remote || {};
+  if (key === 'core') {
+    const out = { ...local };
+    for (const k in remote) {
+      const l = local[k], r = remote[k];
+      if (k === 'cfg') out.cfg = { ...(l || {}), ...(r || {}), fb: (l && l.fb) || (r && r.fb) || null, targets: { ...((l || {}).targets || {}), ...((r || {}).targets || {}) } };
+      else if (r && typeof r === 'object' && !Array.isArray(r) && l && typeof l === 'object' && !Array.isArray(l)) out[k] = { ...l, ...r };
+      else if (Array.isArray(r) && Array.isArray(l)) out[k] = [...r, ...l.filter(x => !r.includes(x))];
+      else out[k] = r;
+    }
+    return out;
+  }
+  const out = { ...local };
+  const isSess = key.startsWith('sess_');
+  for (const d in remote) {
+    const l = local[d], r = remote[d];
+    if (!l) { out[d] = r; continue; }
+    if (isSess) out[d] = (sessionHasWork(r) || !sessionHasWork(l)) ? r : l;
+    else {
+      const ids = new Set((r.items || []).map(i => i.id));
+      out[d] = { ...l, ...r, items: [...(r.items || []), ...(l.items || []).filter(i => !ids.has(i.id))], water: Math.max(l.water || 0, r.water || 0), supps: { ...(l.supps || {}), ...(r.supps || {}) } };
+    }
+  }
+  return out;
+}
 /* ================= المزامنة مع Firebase ================= */
 const Sync = {
   app: null, db: null, auth: null, user: null, timer: null, busy: false, lastOk: null, err: null,
@@ -1169,13 +1455,21 @@ const Sync = {
   },
   async pull() {
     const snap = await this.col().get(); let changed = false;
+    const first = META.syncUid !== this.user.uid;   // أول مزامنة على هالجهاز: ندمج بدل ما نستبدل
     snap.forEach(doc => {
-      const r = doc.data(); const k = doc.id;
-      if ((r.u || 0) > (META.u[k] || 0)) {
-        try { setPart(k, JSON.parse(r.d)); META.u[k] = r.u; delete META.dirty[k]; changed = true; } catch (e) {}
+      const r = doc.data(); const k = doc.id; let remote;
+      try { remote = JSON.parse(r.d); } catch (e) { return; }
+      if (first) {
+        setPart(k, mergePart(k, getPart(k), remote)); META.u[k] = Date.now(); META.dirty[k] = true; changed = true;
+      } else if ((r.u || 0) > (META.u[k] || 0)) {
+        if (META.dirty[k]) { setPart(k, mergePart(k, getPart(k), remote)); META.u[k] = Date.now(); }   // تعديلات على الجهازين: ندمجها
+        else { setPart(k, remote); META.u[k] = r.u; delete META.dirty[k]; }
+        changed = true;
       }
     });
-    if (changed) { load2(); persist(); }
+    if (first) { META.syncUid = this.user.uid; allPartKeys().forEach(k => { if (!META.dirty[k]) { META.u[k] = Date.now(); META.dirty[k] = true; } }); }
+    if (changed) { load2(); Object.keys(EXERCISES).forEach(id => { if (S.prs[id] || Object.values(S.sess).some(x => x.ex && x.ex[id])) recomputePR(id); }); }
+    persist();
     return changed;
   },
   async full(manual) {

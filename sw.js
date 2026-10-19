@@ -1,5 +1,5 @@
 /* تمريني — يشتغل بدون نت */
-const CACHE = 'tamreeni-v2';
+const CACHE = 'tamreeni-v4';
 const SHELL = ['./', 'index.html', 'app.js', 'data.js', 'manifest.json', 'icon-192.png', 'icon-512.png'];
 const CDN = ['unpkg.com', 'www.gstatic.com'];
 
