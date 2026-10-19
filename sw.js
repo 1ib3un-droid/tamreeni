@@ -2,7 +2,7 @@
    مهم: ميزانيتي والشاليه على نفس الموقع ويتشاركون مخزن الملفات،
    فهذا الملف ما يلمس إلا الملفات اللي اسمها يبدأ بـ "tamreeni-". */
 const PREFIX = 'tamreeni-';
-const CACHE = PREFIX + 'v5';
+const CACHE = PREFIX + 'v6';
 const SHELL = ['./', 'index.html', 'app.js', 'data.js', 'manifest.json', 'icon-192.png', 'icon-512.png'];
 const CDN = ['unpkg.com', 'www.gstatic.com'];
 

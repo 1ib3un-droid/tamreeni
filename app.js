@@ -1,7 +1,7 @@
 /* تمريني — تطبيق التمارين والأكل */
 'use strict';
 
-const APP_VERSION = '1.3.1';
+const APP_VERSION = '1.3.2';
 const LS_STATE = 'fitapp_state_v1';
 const LS_META = 'fitapp_meta_v1';
 
@@ -950,11 +950,14 @@ function addFoodModal(date, meal, tab = 'search', prefill = null, onDone = null)
     const p = prefill || {};
     body = `${p.barcode ? `<p class="tiny muted">باركود: <span class="en">${esc(p.barcode)}</span>${p.fromOFF ? ' · القيم من Open Food Facts، راجعها مع الملصق' : ''}</p>` : ''}
       <label>الاسم</label><input id="nn" value="${esc(p.name || '')}" placeholder="مثلاً: وجبة صجي دجاج مع رز">
-      <label>القيم الغذائية لكل</label><select id="nper"><option value="g">100 جرام</option><option value="unit">حبة / حصة / علبة</option></select>
+      <label>القيم الغذائية مكتوبة على الملصق لكل</label><select id="nper"><option value="g">وزن (جرام أو مل)</option><option value="unit">حبة / حصة / علبة</option></select>
+      <div id="baseBox" class="${p.per === 'unit' ? 'hide' : ''}"><label>الوزن المكتوب على الملصق</label>
+        <div class="row"><input id="nbase" inputmode="decimal" value="${p.base || 100}" style="max-width:120px;text-align:center"><select id="nbu" style="max-width:110px"><option value="g">جرام</option><option value="ml" ${p.ml ? 'selected' : ''}>مل</option></select></div>
+        <p class="tiny muted" style="margin:4px 0 0">مثلاً لو الملصق يقول «لكل 100 جرام» خلها 100، ولو مكتوب الوزن الصافي للعلبة (مثل 150) اكتبه وانسخ الأرقام زي ما هي.</p></div>
       <div id="unitBox" class="${p.per === 'unit' ? '' : 'hide'}"><label>اسم الوحدة</label><input id="nunit" value="${esc(p.unit || 'حصة')}"></div>
       <div class="row"><div class="grow"><label>سعرات</label><input id="nk" inputmode="decimal" value="${p.kcal ?? ''}"></div><div class="grow"><label>بروتين</label><input id="np" inputmode="decimal" value="${p.p ?? ''}"></div></div>
       <div class="row"><div class="grow"><label>كارب</label><input id="nc" inputmode="decimal" value="${p.c ?? ''}"></div><div class="grow"><label>دهون</label><input id="nf" inputmode="decimal" value="${p.f ?? ''}"></div></div>
-      <label>وزن الحصة بالجرام (اختياري)</label><input id="ng" inputmode="decimal" value="${p.grams ?? ''}" placeholder="مثلاً 170 لعلبة زبادي">
+      <div id="gBox" class="${p.per === 'unit' ? 'hide' : ''}"><label>وزن العبوة (اختياري، يصير الكمية الافتراضية)</label><input id="ng" inputmode="decimal" value="${p.grams ?? ''}" placeholder="مثلاً 170 لعلبة زبادي"></div>
       <button class="btn-primary btn-block" id="nsave" style="margin-top:12px">احفظ وكمّل</button>`;
   } else {
     closeModal(); return templatesModal(date, meal);
@@ -985,13 +988,20 @@ function addFoodModal(date, meal, tab = 'search', prefill = null, onDone = null)
       if (tab === 'new') {
         const p = prefill || {};
         $('#nper', m).value = p.per || 'g';
-        $('#nper', m).onchange = e => $('#unitBox', m).classList.toggle('hide', e.target.value !== 'unit');
+        $('#nper', m).onchange = e => { const u = e.target.value === 'unit'; $('#unitBox', m).classList.toggle('hide', !u); $('#baseBox', m).classList.toggle('hide', u); $('#gBox', m).classList.toggle('hide', u); };
         $('#nsave', m).onclick = () => {
           const f = { id: 'c_' + uid(), name: $('#nn', m).value.trim(), per: $('#nper', m).value, kcal: num($('#nk', m).value), p: num($('#np', m).value) || 0, c: num($('#nc', m).value) || 0, f: num($('#nf', m).value) || 0 };
           if (!f.name || f.kcal == null) return toast('الاسم والسعرات مطلوبة');
           if (f.per === 'unit') f.unit = $('#nunit', m).value.trim() || 'حصة';
-          const g = num($('#ng', m).value); if (g) f.grams = g;
-          if (p.barcode) f.barcode = p.barcode;
+          else {
+            const base = num($('#nbase', m).value);
+            if (!base || base <= 0) return toast('اكتب الوزن المكتوب على الملصق');
+            const k = 100 / base;   // نحفظ القيم داخلياً لكل 100
+            ['kcal', 'p', 'c', 'f'].forEach(x => f[x] = Math.round(f[x] * k * 100) / 100);
+            const g = num($('#ng', m).value); if (g) f.grams = g; else if (base !== 100) f.grams = base;
+            if ($('#nbu', m).value === 'ml') f.unitLabel = 'مل';
+          }
+          if (p.barcode) f.barcode = bcKey(p.barcode);
           S.foods[f.id] = f; touchCore(); qtyModal(date, meal, f, { onDone });
         };
       }
@@ -1031,15 +1041,20 @@ function startScanner(m, onCode, multi) {
   return stop;
 }
 /* يدور على الباركود: منتجاتك المحفوظة أول، بعدين قاعدة Open Food Facts */
+/* باركود ميزان المحل (يبدأ بـ 2 وفيه السعر أو الوزن): نتعرف عليه من رقم الصنف (أول 7 أرقام) ونتجاهل السعر */
+const isVarCode = code => /^2\d{12}$/.test(code);
+const bcKey = code => isVarCode(code) ? 'v:' + code.slice(0, 7) : code;
 function localBarcode(code) {
-  const mine = Object.values(S.foods).find(f => f.barcode === code);
+  const k = bcKey(code);
+  const mine = Object.values(S.foods).find(f => f.barcode === k || f.barcode === code);
   if (mine) return mine;
-  const linked = S.barcodes[code] && foodById(S.barcodes[code]);
-  return linked || null;
+  const id = S.barcodes[k] || S.barcodes[code];
+  return (id && foodById(id)) || null;
 }
 async function resolveBarcode(code) {
   const loc = localBarcode(code);
   if (loc) return { food: loc };
+  if (isVarCode(code)) return { prefill: { barcode: code, scale: true } };   // باركود ميزان: ما له وجود في القواعد العامة
   if (!navigator.onLine) return { prefill: { barcode: code }, offline: true };
   try {
     const r = await fetch(`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(code)}.json?fields=product_name,product_name_ar,brands,nutriments,serving_quantity,product_quantity,product_quantity_unit`);
@@ -1075,7 +1090,9 @@ async function lookupBarcode(date, meal, code, onDone) {
 /* باركود غير معروف: تربطه بمنتج من القائمة، أو تدخله من الملصق */
 function linkModal(date, meal, code, prefill, onDone, offline) {
   const cands = [...READY_FOODS, ...Object.values(S.foods).filter(f => !f.barcode)];
+  const scale = isVarCode(code);
   openModal(`<h2>ما عرفت هالمنتج</h2><p class="tiny muted">باركود: <span class="en">${esc(code)}</span>${offline ? ' · ما فيه نت' : ''}</p>
+    ${scale ? '<div class="banner small">هذا <b>باركود ميزان المحل</b> (فيه السعر). أدخل المنتج مرة وحدة، والتطبيق بيتعرف على نفس الصنف في المرات الجاية حتى لو تغير السعر أو الوزن.</div>' : ''}
     <p class="small">هو واحد من هالمنتجات؟ قارن <b>الشركة والنكهة والحجم</b> مع اللي في يدك. لو اخترته، ينربط الباركود فيه ويعرفه التطبيق على طول المرات الجاية.</p>
     <input id="lq" placeholder="ابحث: نادك، المراعي، زبادي..." autocomplete="off">
     <div class="list-pick" id="ll" style="margin-top:8px"></div>
@@ -1086,7 +1103,7 @@ function linkModal(date, meal, code, prefill, onDone, offline) {
         $('#ll', m).innerHTML = list.length ? list.map(foodRow).join('') : '<p class="muted small">ما فيه نتائج.</p>';
         $$('[data-f]', m).forEach(el => el.onclick = () => {
           const f = foodById(el.dataset.f);
-          if (f.id.startsWith('c_')) { S.foods[f.id].barcode = code; } else S.barcodes[code] = f.id;
+          if (f.id.startsWith('c_')) { S.foods[f.id].barcode = bcKey(code); } else S.barcodes[bcKey(code)] = f.id;
           touchCore(); toast('تم ربط الباركود بـ ' + f.name);
           qtyModal(date, meal, f, { onDone });
         });
