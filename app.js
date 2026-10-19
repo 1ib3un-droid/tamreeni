@@ -1,7 +1,7 @@
 /* تمريني — تطبيق التمارين والأكل */
 'use strict';
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.3.1';
 const LS_STATE = 'fitapp_state_v1';
 const LS_META = 'fitapp_meta_v1';
 
