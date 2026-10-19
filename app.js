@@ -1,7 +1,7 @@
 /* تمريني — تطبيق التمارين والأكل */
 'use strict';
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 const LS_STATE = 'fitapp_state_v1';
 const LS_META = 'fitapp_meta_v1';
 
@@ -14,6 +14,7 @@ const r1 = n => Math.round(n * 10) / 10;
 const r0 = n => Math.round(n);
 const round25 = n => Math.max(0, Math.round(n / 2.5) * 2.5);
 const num = v => { const x = parseFloat(String(v).replace(',', '.').replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d))); return isNaN(x) ? null : x; };
+const fw = n => (n == null || isNaN(n)) ? '—' : String(r1(n)); // الأوزان: تحافظ على .5
 const fmt = n => (n == null || isNaN(n)) ? '—' : (Math.abs(n) >= 100 || Math.abs(n - Math.round(n)) < 0.05 ? String(Math.round(n)) : r1(n).toString());
 
 /* التواريخ (توقيت الجهاز) */
@@ -116,8 +117,8 @@ function openModal(html, mount) {
   if (mount) modalCleanup = mount($('.modal', bg)) || null;
 }
 function closeModal() {
-  if (typeof modalCleanup === 'function') { try { modalCleanup(); } catch (e) {} }
-  modalCleanup = null;
+  const c = modalCleanup; modalCleanup = null;
+  if (typeof c === 'function') { try { c(); } catch (e) {} }
   $$('.modal-bg').forEach(m => m.remove());
   document.body.style.overflow = '';
 }
@@ -150,20 +151,24 @@ function topWeight(exId, beforeDate) {
   return lp ? Math.max(...lp.sets.map(s => s.w || 0)) : null;
 }
 function priorBest(exId, beforeDate) {
-  let e = 0, w = 0, any = false;
-  for (const d in S.sess) if (d < beforeDate) for (const s of workingSets(S.sess[d].ex?.[exId])) { any = true; e = Math.max(e, e1rm(s.w, s.r) || 0); w = Math.max(w, s.w); }
-  return any ? { e1rm: e, w } : null;
+  let e = 0, w = 0, r0 = 0, any = false, bw = false;
+  for (const d in S.sess) if (d < beforeDate) for (const s of workingSets(S.sess[d].ex?.[exId])) {
+    any = true; e = Math.max(e, e1rm(s.w, s.r) || 0); w = Math.max(w, s.w);
+    if (s.w === 0) { bw = true; r0 = Math.max(r0, s.r); }
+  }
+  return any ? { e1rm: e, w, r0, bw } : null;
 }
 function recomputePR(exId) {
   let best = null;
   for (const d of Object.keys(S.sess).sort()) {
     for (const s of workingSets(S.sess[d].ex?.[exId])) {
       const e = e1rm(s.w, s.r);
-      if (!best) best = { e1rm: e || 0, w: s.w, r: s.r, date: d, wDate: d };
+      if (!best) best = { e1rm: e || 0, w: s.w, r: s.r, date: d, wDate: d, r0: 0 };
       else {
         if (e && e > best.e1rm + 1e-6) { best.e1rm = e; best.r = s.r; best.date = d; best.eW = s.w; }
         if (s.w > best.w) { best.w = s.w; best.wDate = d; }
       }
+      if (s.w === 0 && s.r > (best.r0 || 0)) { best.r0 = s.r; if (!best.e1rm) best.date = d; }
     }
   }
   if (best) S.prs[exId] = best; else delete S.prs[exId];
@@ -207,15 +212,10 @@ function suggestion(date = today()) {
 }
 /* التمرين الجاي بعد هذا اليوم */
 function nextPlan(date = today()) {
-  for (let i = 1; i <= 7; i++) {
+  for (let i = 1; i <= 8; i++) {
     const d = addDays(date, i);
-    if (!isTrainDow(d)) continue;
-    if (weekStart(d) === weekStart(date)) {
-      const wi = weekInfo(date);
-      const rem = wi.remaining.filter(k => !(S.sess[date] && S.sess[date].day === k));
-      return { date: d, day: rem[0] || scheduledDay(d) };
-    }
-    return { date: d, day: scheduledDay(d) };
+    const p = planForDate(d);
+    if (p.day) return { date: d, day: p.day };
   }
   return null;
 }
@@ -247,7 +247,7 @@ function calc(food, qty) {
   const k = food.per === 'unit' ? qty : qty / 100;
   return { kcal: food.kcal * k, p: food.p * k, c: food.c * k, f: food.f * k };
 }
-const isRestDay = date => !isTrainDow(date) && !sessionHasWork(S.sess[date]);
+const isRestDay = date => !isTrainDow(date) && !sessionHasWork(S.sess[date]) && !S.plan[date];
 const targetsFor = date => isRestDay(date) ? S.cfg.targets.rest : S.cfg.targets.train;
 function diaryDay(date, create) {
   if (!S.diary[date] && create) S.diary[date] = { items: [], water: 0, supps: {} };
@@ -358,7 +358,10 @@ function viewHome() {
     workout = `<h2>تمرين اليوم: ${PROGRAM[s.day].ar}</h2><p class="muted small">${s.end ? 'خلّصت حصة اليوم ✅' : 'الحصة شغالة'}</p>
       <a class="btn btn-primary btn-block" href="#workout">${s.end ? 'عرض الحصة' : 'كمّل التمرين'}</a>`;
   } else if (sg.day) {
-    const note = sg.kind === 'shifted' ? `<div class="banner warn small">فاتتك حصة ${PROGRAM[sg.day].ar} هالأسبوع، فاليوم تعوضها بدل ${PROGRAM[scheduledDay(t)].ar}.</div>` : '';
+    const sd = scheduledDay(t);
+    const note = sg.kind === 'shifted' ? (wi.done[sd]
+      ? `<div class="banner small">حصة اليوم (${PROGRAM[sd].ar}) سويتها قبل، فاليوم دورك على ${PROGRAM[sg.day].ar}.</div>`
+      : `<div class="banner warn small">فاتتك حصة ${PROGRAM[sg.day].ar} هالأسبوع، فاليوم تعوضها بدل ${PROGRAM[sd].ar}.</div>`) : '';
     const drop = sg.drop ? `<div class="banner warn small">الأسبوع ما يكفي لكل الحصص. اقتراح: احذف حصة <b>${PROGRAM[sg.drop].ar}</b> هالأسبوع. <button class="btn-sm btn-ghost" data-skip="${sg.drop}">احذفها</button></div>` : '';
     workout = `<h2>تمرين اليوم: ${PROGRAM[sg.day].ar}</h2>${note}${drop}
       <p class="muted small">${PROGRAM[sg.day].ex.length} تمارين · الأسبوع ${programWeek(t)} من البرنامج</p>
@@ -503,7 +506,7 @@ function exerciseCard(day, idx, date, readOnly) {
     const e = e1rm(st.w, st.r);
     rows.push(`<div class="set logged" ${readOnly ? '' : `data-edit="${slot.id}" data-k="${k}"`}><span class="n">${st.t === 'w' ? 'إ' : workingSets(logged.slice(0, k + 1)).length}</span>
       <span class="tag ${st.t}">${st.t === 'w' ? 'إحماء' : st.t === 'f' ? 'فشل' : 'عادية'}</span>
-      <span class="val">${fmt(st.w)} كجم</span><span class="val">${st.r} ×</span>
+      <span class="val">${st.w === 0 && ex.bw ? 'وزن الجسم' : fw(st.w) + ' كجم'}</span><span class="val">${st.r} ×</span>
       <span class="tiny muted" style="text-align:center">${st.pr ? '<span class="pr">🏆</span>' : e ? fmt(e) : ''}</span></div>`);
   });
   const remain = readOnly ? 0 : Math.max(0, slot.sets - work.length);
@@ -515,7 +518,7 @@ function exerciseCard(day, idx, date, readOnly) {
     const pv = work[work.length - 1] || prevSets[setNo - 1] || prevSets[prevSets.length - 1];
     rows.push(`<div class="set" data-row="${slot.id}"><span class="n">${setNo}</span>
       <span class="tag ${tp}" data-type="${tp}">${tp === 'f' ? 'فشل' : 'عادية'}</span>
-      <input inputmode="decimal" placeholder="${pv ? fmt(pv.w) : 'الوزن'}" aria-label="الوزن">
+      <input inputmode="decimal" placeholder="${pv ? fw(pv.w) : (ex.bw ? '0' : 'الوزن')}" aria-label="الوزن">
       <input inputmode="numeric" placeholder="${pv ? pv.r : slot.reps}" aria-label="التكرار">
       <button class="ok" data-save="${slot.id}" aria-label="حفظ">✓</button></div>`);
   }
@@ -531,8 +534,9 @@ function exerciseCard(day, idx, date, readOnly) {
       <button class="btn-sm" data-note="${slot.id}">📝 ملاحظة</button>
     </div>
     ${S.notes[slot.id] ? `<div class="note">📝 ${esc(S.notes[slot.id])}</div>` : ''}
-    ${lp ? `<div class="last">آخر مرة (${dShort(lp.date)}): ${lp.sets.map(x => `${fmt(x.w)}×${x.r}`).join('، ')}</div>` : ''}
-    ${pr ? `<div class="tiny muted" style="margin-top:4px">🏆 أفضل قوة مقدّرة: ${fmt(pr.e1rm)} كجم · أثقل وزن: ${fmt(pr.w)} كجم</div>` : ''}
+    ${lp ? `<div class="last">آخر مرة (${dShort(lp.date)}): ${lp.sets.map(x => `${x.w === 0 && ex.bw ? 'جسم' : fw(x.w)}×${x.r}`).join('، ')}</div>` : ''}
+    ${pr ? `<div class="tiny muted" style="margin-top:4px">🏆 ${pr.e1rm > 0 ? `أفضل قوة مقدّرة: ${fmt(pr.e1rm)} كجم · أثقل وزن: ${fw(pr.w)} كجم` : ''}${pr.e1rm > 0 && pr.r0 ? ' · ' : ''}${pr.r0 ? `أكثر تكرار بوزن الجسم: ${pr.r0}` : ''}</div>` : ''}
+    ${ex.bw ? '<div class="tiny muted" style="margin-top:4px">💡 بوزن جسمك اكتب الوزن 0. ولو أضفت وزن (حزام أو دمبل) اكتب الوزن الإضافي بس.</div>' : ''}
     ${warm}${readOnly ? (rows.length ? hdr + rows.join('') : '') : hdr + rows.join('') + `<button class="btn-sm btn-ghost" style="margin-top:8px" data-extra="${slot.id}">+ مجموعة</button>`}
   </div>`;
 }
@@ -557,7 +561,7 @@ viewWorkout.bind_ = (app, arg) => {
       recomputePR(exId);
       const prior = priorBest(exId, t);
       const e = e1rm(w, r) || 0;
-      if (prior && (e > prior.e1rm + 1e-6 || w > prior.w)) {
+      if (prior && ((e > 0 && e > prior.e1rm + 1e-6) || w > prior.w || (w === 0 && prior.bw && r > prior.r0))) {
         set.pr = true;
         if (!(s.prs || []).includes(exId)) { s.prs = [...(s.prs || []), exId]; toast('🏆 رقم قياسي جديد في ' + EXERCISES[exId].ar + '!', 3200); }
       }
@@ -643,7 +647,7 @@ function showVideo(exId) {
       : `<div class="banner small">ما فيه مقطع مثبت لهذا التمرين للحين. ابحث، وإذا عجبك مقطع انسخ رابطه وثبّته تحت.</div>`}
     <div class="row" style="margin-top:8px"><a class="btn grow" target="_blank" rel="noopener" href="https://www.youtube.com/results?search_query=${qAr}">بحث بالعربي</a>
     <a class="btn grow" target="_blank" rel="noopener" href="https://www.youtube.com/results?search_query=${qEn}">بحث بالإنجليزي</a></div>
-    <label>رابط مقطع تثبّته لهذا التمرين</label><div class="row"><input id="vu" placeholder="https://youtu.be/..." value="${esc(S.videos[exId] || '')}" style="direction:ltr"><button class="btn-primary" id="vs">ثبّت</button></div>
+    <label>ما عجبك المقطع؟ الصق رابط مقطع ثاني من يوتيوب</label><div class="row"><input id="vu" placeholder="https://youtu.be/..." value="${esc(S.videos[exId] || '')}" style="direction:ltr"><button class="btn-primary" id="vs">ثبّت</button></div>
     ${S.videos[exId] ? '<button class="btn-sm btn-ghost btn-danger" id="vr" style="margin-top:8px">إلغاء التثبيت</button>' : ''}
     <h3 style="margin-top:14px">نقاط الأداء</h3><ul>${ex.cues.map(c => `<li>${esc(c)}</li>`).join('')}</ul>`,
     m => {
@@ -676,7 +680,7 @@ function editNote(exId) {
   openModal(`<h2>ملاحظة: ${esc(EXERCISES[exId].ar)}</h2><p class="muted small">مثل: المقعد على رقم 4، قبضة أوسع من الكتف بشبر</p>
     <textarea id="nt" style="direction:rtl;text-align:right;font-size:15px">${esc(S.notes[exId] || '')}</textarea>
     <button class="btn-primary btn-block" id="ns" style="margin-top:10px">حفظ</button>`,
-    m => $('#ns', m).onclick = () => { const v = $('#nt', m).value.trim(); if (v) S.notes[exId] = v; else delete S.notes[exId]; touchCore(); closeModal(); rerender(); });
+    m => { $('#ns', m).onclick = () => { const v = $('#nt', m).value.trim(); if (v) S.notes[exId] = v; else delete S.notes[exId]; touchCore(); closeModal(); rerender(); }; });
 }
 
 /* ---------- الأكل ---------- */
@@ -766,11 +770,11 @@ function saveTemplate(date, meal) {
   openModal(`<h2>احفظ كوجبة جاهزة</h2><p class="muted small">${its.map(i => esc(i.name)).join('، ')}</p>
     <label>اسم الوجبة</label><input id="tn" placeholder="مثلاً: فطوري المعتاد">
     <button class="btn-primary btn-block" id="ts" style="margin-top:12px">حفظ</button>`,
-    m => $('#ts', m).onclick = () => {
+    m => { $('#ts', m).onclick = () => {
       const n = $('#tn', m).value.trim(); if (!n) return toast('اكتب اسم');
       const id = 't_' + uid(); S.templates[id] = { id, name: n, items: its.map(i => ({ fid: i.fid, qty: i.qty })) };
       touchCore(); closeModal(); toast('تم حفظ الوجبة');
-    });
+    }; });
 }
 function templatesModal(date, meal) {
   const list = Object.values(S.templates);
@@ -945,12 +949,13 @@ function viewProgress() {
   if (!progExercise || !exWithData.includes(progExercise)) progExercise = exWithData[0] || null;
   let strength = '<p class="muted small">أول ما تسجل تمارينك، يطلع لك هنا تطور قوتك لكل تمرين.</p>';
   if (progExercise) {
-    const pts2 = Object.keys(S.sess).sort().map(d => { const best = Math.max(0, ...workingSets(S.sess[d].ex?.[progExercise]).map(s => e1rm(s.w, s.r) || 0)); return best ? { x: d, y: r1(best) } : null; }).filter(Boolean);
+    const repsMode = !(S.prs[progExercise].e1rm > 0);
+    const pts2 = Object.keys(S.sess).sort().map(d => { const ws_ = workingSets(S.sess[d].ex?.[progExercise]); const best = repsMode ? Math.max(0, ...ws_.map(s => s.r)) : Math.max(0, ...ws_.map(s => e1rm(s.w, s.r) || 0)); return best ? { x: d, y: r1(best) } : null; }).filter(Boolean);
     strength = `<select id="pex">${exWithData.map(id => `<option value="${id}" ${id === progExercise ? 'selected' : ''}>${esc(EXERCISES[id].ar)}</option>`).join('')}</select>
       <div style="margin-top:10px">${lineChart([{ pts: pts2, color: 'var(--accent)' }], { empty: 'يحتاج حصتين على الأقل لهذا التمرين.' })}</div>
-      <p class="tiny muted">الخط = القوة المقدّرة (أقصى وزن لمرة وحدة تقديرياً) في كل حصة. الوزن × (1 + التكرار ÷ 30).</p>`;
+      <p class="tiny muted">${repsMode ? 'الخط = أكثر تكرارات بوزن الجسم في كل حصة.' : 'الخط = القوة المقدّرة (أقصى وزن لمرة وحدة تقديرياً) في كل حصة. الوزن × (1 + التكرار ÷ 30).'}</p>`;
   }
-  const prRows = exWithData.sort((a, b) => (S.prs[b].date || '').localeCompare(S.prs[a].date || '')).map(id => { const p = S.prs[id]; return `<tr><td>${esc(EXERCISES[id].ar)}</td><td><b>${fmt(p.e1rm)}</b></td><td>${fmt(p.w)}</td><td class="tiny">${dShort(p.date)}</td></tr>`; }).join('');
+  const prRows = exWithData.sort((a, b) => (S.prs[b].date || '').localeCompare(S.prs[a].date || '')).map(id => { const p = S.prs[id]; return `<tr><td>${esc(EXERCISES[id].ar)}</td><td><b>${p.e1rm > 0 ? fmt(p.e1rm) : '—'}</b></td><td>${p.w > 0 ? fw(p.w) : (p.r0 ? p.r0 + ' تكرار' : '—')}</td><td class="tiny">${dShort(p.date)}</td></tr>`; }).join('');
   return `<h1>التقدم</h1>
     <div class="card"><div class="row between"><h2>الوزن</h2><span class="small muted">${ws.a1 != null ? 'متوسط 7 أيام: <b>' + fmt(ws.a1) + '</b> كجم' : ''}</span></div>
       <div class="row"><input id="wd" type="date" value="${today()}" max="${today()}" style="max-width:48%"><input id="wv" inputmode="decimal" placeholder="الوزن"><button class="btn-primary" id="wsave">حفظ</button></div>

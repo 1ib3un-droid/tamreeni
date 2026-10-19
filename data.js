@@ -51,7 +51,7 @@ const EXERCISES = {
   pec_deck:     { ar: 'جهاز فراشة', en: 'Pec Deck', m: ['chest'], kind: 'i',
     cues: ['المقابض بمستوى الصدر', 'ظهرك ملاصق للمسند', 'اعصر الصدر في النص، وارجع ببطء'],
     alts: ['cable_fly'] },
-  dips:         { ar: 'ديبس', en: 'Dips', m: ['triceps', 'chest', 'front_delt'], kind: 'c',
+  dips:         { ar: 'ديبس', en: 'Dips', m: ['triceps', 'chest', 'front_delt'], bw: true, kind: 'c',
     cues: ['ميلان بسيط لقدام', 'انزل لين الكتف يقارب مستوى الكوع، ولا تنزل أكثر لو ألمك الكتف', 'لا تتمرجح، واطلع بتحكم'],
     alts: ['machine_dip', 'bar_pushdown'] },
   machine_dip:  { ar: 'ديبس جهاز', en: 'Machine Dip', m: ['triceps', 'chest'], kind: 'c',
@@ -74,7 +74,7 @@ const EXERCISES = {
   lat_pd_close: { ar: 'سحب أمامي قبضة ضيقة', en: 'Close-Grip Lat Pulldown', m: ['lats', 'biceps'], kind: 'c',
     cues: ['المقبض الضيق (V) أو قبضة بعرض الكتف', 'اسحب لأعلى الصدر والكوع ينزل جنب جسمك', 'ارجع لآخر تمدد بتحكم'],
     alts: ['pullup', 'lat_pd_wide'] },
-  pullup:       { ar: 'عقلة', en: 'Pull-Up', m: ['lats', 'upper_back', 'biceps'], kind: 'c',
+  pullup:       { ar: 'عقلة', en: 'Pull-Up', m: ['lats', 'upper_back', 'biceps'], bw: true, kind: 'c',
     cues: ['ابدأ من تعليق كامل', 'اسحب صدرك للبار بالكوع، مو باليد', 'انزل بتحكم بدون مرجحة. إذا ما تكمل التكرار، استخدم جهاز المساعدة'],
     alts: ['lat_pd_close', 'lat_pd_wide'] },
   cs_row:       { ar: 'تجديف مسنود الصدر', en: 'Chest-Supported Row', m: ['upper_back', 'lats', 'rear_delt', 'biceps'], kind: 'c',
@@ -196,7 +196,7 @@ const EXERCISES = {
   cable_crunch: { ar: 'كيبل كرنش', en: 'Cable Crunch', m: ['abs'], kind: 'i',
     cues: ['الورك ثابت، والحركة من البطن', 'قرّب الكوع للركبة بلف العمود الفقري', 'لا تسحب بيدك'],
     alts: ['hanging_raise'] },
-  hanging_raise:{ ar: 'رفع الأرجل معلق', en: 'Hanging Leg Raise', m: ['abs'], kind: 'i',
+  hanging_raise:{ ar: 'رفع الأرجل معلق', en: 'Hanging Leg Raise', m: ['abs'], bw: true, kind: 'i',
     cues: ['لا تتمرجح', 'ارفع الحوض مو بس الرجل', 'انزل ببطء'],
     alts: ['cable_crunch'] }
 };
@@ -299,3 +299,26 @@ const MEALS = [
   { id: 'dinner',    ar: 'عشاء' },
   { id: 'snack',     ar: 'سناك' }
 ];
+
+/* مقاطع الشرح: عربي إذا توفر شرح واضح، وإلا إنجليزي */
+const VIDEOS = {
+  bench: '_QWz-gE2dsM', db_bench: 'mCEIUZySRPY', smith_bench: '2Mzh-YLQP3Q',
+  incline_db: 'qxXoo_pCPn0', incline_smith: 'wXuyuiLJs7g', machine_chest: 'jh5QDzig4_0',
+  cable_fly: 'a9j2q59i97A', pec_deck: 'zZX6dD-QFI0', dips: 'sFGHDsu7vMM', machine_dip: 'Zg0tT27iYuY',
+  bb_row: 'jek5DVIArWc', db_row: 'IkSCDafLoBE', tbar_row: 'LRju9IOWw38',
+  lat_pd_wide: 'aHRTg4Igae4', lat_pd_close: 'Tq8SSIggfE4', pullup: 'QKMNuEqTMIw',
+  cs_row: 'QpLTp2AJ_cI', machine_row: '6wNfv8TBvp8', wide_cable_row: 'y7h823PdWIY',
+  straight_arm: 'df53D3BzXD4', reverse_pec: 'pYdzGA6B9U0', face_pull: '0E3LQRdivGI',
+  db_ohp: '0bkcFr5sALI', machine_ohp: 'aoTThR0_Quc',
+  lat_raise_db: 'S9Nnsa-MVKQ', cable_lat_raise: 't1hrwX5llwg', machine_lat_raise: 'zet_tot8CrE',
+  ez_curl: 'Uizy2oNGIlQ', db_curl: 'ZXohULBZIDY', cable_curl: 'DEVH2f7ax4s',
+  incline_curl: 'PAnypqTfEuU', hammer: '-fnizWPQPdM',
+  rope_pushdown: 'y1ZRM5dExd8', bar_pushdown: '8JBHlaS7Dkk', oh_cable_tri: 'ZxEGDzMN99M', db_oh_ext: 'R_C3K-AeUQg',
+  squat: 'FMsBtgg4asI', smith_squat: 'rFTo5aEpxHs', hack: 'wH-em6CdIqg', leg_press: 'DGL_PW065tg',
+  bulgarian: 'odI77vU7STs', lunges: 'ty9aAjPVuN4', leg_ext: 'd4LEzUALIOw',
+  rdl: '6ISED3eBc68', db_rdl: 'C_FYH6SBhxk', lying_curl: 'JCQXMZHiMb8', seated_curl: 'DfmEb-5HvNQ',
+  hip_thrust: '1c5z8nEigoI', machine_hip_thrust: 'UlljOYPM57U',
+  calf_stand: 'ePeEKog98uE', calf_seated: 'JxM9Kg7q3j4', calf_legpress: 'OMUvfMZOcSA',
+  cable_crunch: 'ToJeyhydUxU', hanging_raise: '1VCTvN8_gyM'
+};
+for (const k in VIDEOS) if (EXERCISES[k]) EXERCISES[k].video = 'https://www.youtube.com/watch?v=' + VIDEOS[k];
